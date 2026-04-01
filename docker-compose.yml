@@ -1,0 +1,36 @@
+version: "3.8"
+
+services:
+  wickedsync:
+    build: .
+    container_name: wickedsync
+    restart: unless-stopped
+    # Host networking = Docker container shares the NAS's public IP.
+    # This is required: Gumroad CDN URLs are IP-locked to the IP that
+    # authenticated the download. With host networking, downloads from
+    # this container work exactly as if the NAS's browser made the request.
+    network_mode: host
+    volumes:
+      # App data (SQLite DB, config)
+      - ./data:/app/data
+      # Your Wicked Archive folders on the NAS. Adjust paths if needed.
+      - "/volume1/STL Archive/Wicked Archive/Movies:/mnt/movies"
+      - "/volume1/STL Archive/Wicked Archive/Video Games:/mnt/vg"
+      - "/volume1/STL Archive/Wicked Archive/Marvel:/mnt/marvel"
+    environment:
+      # Required: get from https://console.anthropic.com
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      # Required: paste your Gumroad session cookie string here.
+      # From browser DevTools → Application → Cookies → gumroad.com
+      # Copy _gumroad_app_session and _gumroad_guid values.
+      - GUMROAD_COOKIES=${GUMROAD_COOKIES}
+      # How many files to download simultaneously
+      - CONCURRENT_DOWNLOADS=6
+      # Port for the web UI and API
+      - PORT=8088
+      # NAS paths (inside container, matched to volume mounts above)
+      - MOVIES_PATH=/mnt/movies
+      - VG_PATH=/mnt/vg
+      - MARVEL_PATH=/mnt/marvel
+      # Optional: Claude model to use
+      - CLAUDE_MODEL=claude-opus-4-6

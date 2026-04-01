@@ -1,0 +1,1 @@
+# WickedSync app package
