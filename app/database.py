@@ -9,6 +9,13 @@ from app.config import settings
 DB_PATH = settings.db_path
 
 CREATE_TABLES = """
+CREATE TABLE IF NOT EXISTS folder_preferences (
+    pattern   TEXT PRIMARY KEY,
+    canonical TEXT NOT NULL,
+    source    TEXT DEFAULT 'user',
+    created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS franchise_tags (
     model_name  TEXT PRIMARY KEY,
     franchise   TEXT NOT NULL,

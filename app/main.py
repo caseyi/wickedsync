@@ -591,6 +591,20 @@ async def list_org_preferences():
     return {"count": len(prefs), "preferences": prefs}
 
 
+class SavePreferenceRequest(BaseModel):
+    pattern: str    # zip stem (without .zip)
+    canonical: str  # folder name to use
+
+
+# NOTE: specific routes (/preferences) MUST be registered before the
+# parameterized route (/{category}) so FastAPI doesn't swallow them.
+@app.post("/api/organize/preferences")
+async def save_org_preference(req: SavePreferenceRequest):
+    """Teach the app a folder mapping (pattern → canonical name)."""
+    await save_preference(req.pattern, req.canonical)
+    return {"saved": True, "pattern": req.pattern, "canonical": req.canonical}
+
+
 @app.get("/api/organize/{category}")
 async def organize_plan(category: str, custom_path: str | None = None):
     """
@@ -609,15 +623,3 @@ async def organize_execute(category: str, req: OrganizeConfirmRequest):
     plan = build_organization_plan(base_path, franchise_map=franchise_map)
     result = execute_organization_plan(plan, dry_run=not req.confirmed)
     return result
-
-
-class SavePreferenceRequest(BaseModel):
-    pattern: str    # zip stem (without .zip)
-    canonical: str  # folder name to use
-
-
-@app.post("/api/organize/preferences")
-async def save_org_preference(req: SavePreferenceRequest):
-    """Teach the app a folder mapping (pattern → canonical name)."""
-    await save_preference(req.pattern, req.canonical)
-    return {"saved": True, "pattern": req.pattern, "canonical": req.canonical}
