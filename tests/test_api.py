@@ -24,12 +24,14 @@ async def init_db():
     """Re-init the DB before each test."""
     await db.init_db()
     yield
-    # Clean up jobs/files between tests
+    # Clean up all tables between tests
     import aiosqlite
     async with aiosqlite.connect(os.environ["DB_PATH"]) as conn:
         await conn.execute("DELETE FROM jobs")
         await conn.execute("DELETE FROM files")
         await conn.execute("DELETE FROM chat_messages")
+        await conn.execute("DELETE FROM franchise_tags")
+        await conn.execute("DELETE FROM folder_preferences")
         await conn.commit()
 
 
