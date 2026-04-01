@@ -9,6 +9,15 @@ from app.config import settings
 DB_PATH = settings.db_path
 
 CREATE_TABLES = """
+CREATE TABLE IF NOT EXISTS franchise_tags (
+    model_name  TEXT PRIMARY KEY,
+    franchise   TEXT NOT NULL,
+    term        TEXT DEFAULT '',
+    source      TEXT DEFAULT 'user',   -- 'user' | 'claude'
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS jobs (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     model_name  TEXT NOT NULL,
@@ -159,6 +168,42 @@ async def get_recent_messages(limit: int = 20) -> list[dict]:
         ) as cur:
             rows = await cur.fetchall()
             return [dict(r) for r in reversed(rows)]
+
+
+# ── Franchise tags ────────────────────────────────────────────────────────────
+
+async def get_franchise_tags() -> dict[str, str]:
+    """Return {model_name: franchise} for all saved tags."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT model_name, franchise FROM franchise_tags ORDER BY franchise, model_name") as cur:
+            return {r["model_name"]: r["franchise"] for r in await cur.fetchall()}
+
+
+async def list_franchise_tags() -> list[dict]:
+    """Return all franchise tag rows as dicts."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM franchise_tags ORDER BY franchise, model_name") as cur:
+            return [dict(r) for r in await cur.fetchall()]
+
+
+async def set_franchise_tag(model_name: str, franchise: str, term: str = "", source: str = "user"):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """INSERT INTO franchise_tags (model_name, franchise, term, source, created_at, updated_at)
+               VALUES (?,?,?,?,?,?)
+               ON CONFLICT(model_name) DO UPDATE SET franchise=excluded.franchise,
+                 term=excluded.term, source=excluded.source, updated_at=excluded.updated_at""",
+            (model_name, franchise, term, source, now(), now()),
+        )
+        await db.commit()
+
+
+async def delete_franchise_tag(model_name: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM franchise_tags WHERE model_name=?", (model_name,))
+        await db.commit()
 
 
 # ── Stats ─────────────────────────────────────────────────────────────────────

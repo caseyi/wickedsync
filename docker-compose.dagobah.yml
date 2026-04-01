@@ -1,0 +1,27 @@
+version: "3.8"
+
+# docker-compose override for Dagobah NAS (Movies + Video Games only)
+# Marvel archive lives on Endor — that volume is NOT mounted here.
+#
+# Usage on Dagobah:
+#   sudo docker-compose -f docker-compose.dagobah.yml up -d
+
+services:
+  wickedsync:
+    image: ghcr.io/caseyi/wickedsync:latest
+    container_name: wickedsync
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./data:/app/data
+      - "/volume1/STL Archive/Wicked Archive/Movies:/mnt/movies"
+      - "/volume1/STL Archive/Wicked Archive/Video Games:/mnt/vg"
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - GUMROAD_COOKIES=${GUMROAD_COOKIES}
+      - CONCURRENT_DOWNLOADS=6
+      - PORT=8088
+      - MOVIES_PATH=/mnt/movies
+      - VG_PATH=/mnt/vg
+      - MARVEL_PATH=/mnt/movies   # fallback — Marvel items won't route here anyway
+      - CLAUDE_MODEL=claude-opus-4-6

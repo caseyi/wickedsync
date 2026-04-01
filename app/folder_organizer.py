@@ -171,20 +171,32 @@ async def load_preferences() -> dict[str, str]:
         return {}
 
 
-def build_organization_plan(base_dir: str) -> dict:
+def build_organization_plan(
+    base_dir: str,
+    franchise_map: dict[str, str] | None = None,
+) -> dict:
     """
-    Scan base_dir for .zip files up to 2 levels deep and build a plan:
-    {
-      'moves': [{'src': '/abs/path/file.zip', 'dest': '/abs/path/folder/file.zip', 'folder': 'folder_name'}, ...],
-      'already_correct': [...],
-      'empty_dirs_to_remove': [...],
-      'conflict_renames': [...],  # folders matching Synology conflict pattern
-    }
+    Scan base_dir for .zip files up to 2 levels deep and build a plan.
+
+    franchise_map: optional {canonical_folder_name: franchise_name}.
+      When a match is found, the destination becomes:
+        base_dir / franchise_name / folder_name / file.zip
+      instead of:
+        base_dir / folder_name / file.zip
+
+    Returns:
+      {
+        'moves': [{'src': str, 'dest': str, 'folder': str, 'franchise': str|None}],
+        'already_correct': [...],
+        'empty_dirs_to_remove': [...],
+        'conflict_renames': [...],
+      }
     """
     moves = []
     already_correct = []
     empty_dirs = []
     conflict_renames = []
+    franchise_map = franchise_map or {}
 
     # Find Synology conflict folders
     conflict_pattern = re.compile(r'^(.+)_ADMIN_[A-Za-z]+-[0-9]+-[0-9]+-[0-9]+_Conflict(.*)$')
@@ -204,7 +216,6 @@ def build_organization_plan(base_dir: str) -> dict:
         if os.path.isdir(full):
             m = conflict_pattern.match(name)
             if m:
-                # Suggest merging into the canonical folder
                 canonical = m.group(1) + m.group(2)
                 conflict_renames.append({
                     "conflict_folder": full,
@@ -219,7 +230,6 @@ def build_organization_plan(base_dir: str) -> dict:
         if os.path.isfile(full) and entry.lower().endswith('.zip'):
             zip_files.append(full)
         elif os.path.isdir(full):
-            # One level deeper
             try:
                 for sub_entry in os.listdir(full):
                     sub_full = os.path.join(full, sub_entry)
@@ -229,9 +239,16 @@ def build_organization_plan(base_dir: str) -> dict:
                 pass
 
     for zip_path in sorted(zip_files):
-        stem = os.path.basename(zip_path)[:-4]  # remove .zip
+        stem = os.path.basename(zip_path)[:-4]
         folder_name = _canonical_folder(stem)
-        dest_dir = os.path.join(base_dir, folder_name)
+
+        # Franchise nesting: base_dir/franchise/folder_name/ instead of base_dir/folder_name/
+        franchise = franchise_map.get(folder_name)
+        if franchise:
+            dest_dir = os.path.join(base_dir, franchise, folder_name)
+        else:
+            dest_dir = os.path.join(base_dir, folder_name)
+
         dest_path = os.path.join(dest_dir, os.path.basename(zip_path))
 
         if zip_path == dest_path:
@@ -242,6 +259,7 @@ def build_organization_plan(base_dir: str) -> dict:
             "src": zip_path,
             "dest": dest_path,
             "folder": folder_name,
+            "franchise": franchise,
         })
 
     # Find empty subdirs (candidates for cleanup)

@@ -38,6 +38,7 @@ from app.folder_organizer import (
     save_preference,
     load_preferences,
 )
+import anthropic as _anthropic
 
 logging.basicConfig(
     level=logging.INFO,
@@ -333,6 +334,113 @@ async def list_library(category: str, search: str = ""):
     return {"category": category, "path": base_path, "folder_count": len(folders), "folders": folders}
 
 
+# ── Franchise tags ────────────────────────────────────────────────────────────
+
+class FranchiseTagRequest(BaseModel):
+    model_name: str
+    franchise: str
+    term: str = ""
+    source: str = "user"
+
+
+class FranchiseSuggestRequest(BaseModel):
+    model_names: list[str] | None = None   # if None, use all known job model_names
+    term: str | None = None                # filter by term
+
+
+@app.get("/api/tags")
+async def list_tags():
+    """Return all saved franchise tags."""
+    tags = await db.list_franchise_tags()
+    return {"count": len(tags), "tags": tags}
+
+
+@app.post("/api/tags", status_code=201)
+async def save_tag(req: FranchiseTagRequest):
+    """Save or update a franchise tag for a model."""
+    await db.set_franchise_tag(req.model_name, req.franchise, req.term, req.source)
+    return {"saved": True, "model_name": req.model_name, "franchise": req.franchise}
+
+
+@app.delete("/api/tags/{model_name}")
+async def delete_tag(model_name: str):
+    """Remove a franchise tag."""
+    await db.delete_franchise_tag(model_name)
+    return {"deleted": True, "model_name": model_name}
+
+
+@app.post("/api/tags/suggest")
+async def suggest_franchise_tags(req: FranchiseSuggestRequest):
+    """
+    Ask Claude to group a list of model names into franchise/universe buckets.
+    Returns suggested {model_name: franchise} mappings without saving them.
+    Pass model_names=null to auto-pull all known job model names from the DB.
+    """
+    if not settings.anthropic_api_key:
+        raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY not configured")
+
+    # Collect model names
+    if req.model_names:
+        names = req.model_names
+    else:
+        jobs = await db.list_jobs()
+        if req.term:
+            jobs = [j for j in jobs if j.get("term", "").lower() == req.term.lower()]
+        names = sorted({j["model_name"] for j in jobs})
+
+    if not names:
+        return {"suggestions": {}, "message": "No model names found."}
+
+    # Ask Claude to group them
+    prompt = (
+        "You are a 3D printing STL library organiser. Below is a list of 3D model names "
+        "from a Gumroad library. Group each model into its franchise, movie, game, or universe. "
+        "Return ONLY valid JSON: an object where each key is a model name from the list "
+        "and the value is the franchise/universe name (e.g. 'Lord of the Rings', 'Marvel', "
+        "'Star Wars', 'DC Comics', 'Video Games', etc). "
+        "Use 'Standalone' for models that don't belong to any franchise. "
+        "Keep franchise names consistent — if two models are from the same franchise use the "
+        "exact same string. Output only the JSON object, no explanation.\n\n"
+        "Model names:\n" + "\n".join(f"- {n}" for n in names)
+    )
+
+    client = _anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    message = client.messages.create(
+        model=settings.claude_model,
+        max_tokens=2048,
+        messages=[{"role": "user", "content": prompt}],
+    )
+
+    raw = message.content[0].text.strip()
+    # Strip markdown code fences if present
+    if raw.startswith("```"):
+        raw = "\n".join(raw.split("\n")[1:])
+        raw = raw.rstrip("`").strip()
+
+    import json
+    try:
+        suggestions = json.loads(raw)
+    except Exception:
+        raise HTTPException(status_code=500, detail=f"Claude returned unparseable JSON: {raw[:300]}")
+
+    return {"suggestions": suggestions, "model_count": len(suggestions)}
+
+
+@app.post("/api/tags/apply-suggestions")
+async def apply_suggestions(body: dict):
+    """
+    Save a {model_name: franchise} dict as Claude-sourced franchise tags.
+    Body: {"suggestions": {"Model A": "Franchise X", ...}}
+    """
+    suggestions: dict = body.get("suggestions", {})
+    saved = 0
+    for model_name, franchise in suggestions.items():
+        if franchise and franchise.lower() != "standalone":
+            await db.set_franchise_tag(model_name, franchise, source="claude")
+            saved += 1
+    return {"saved": saved}
+
+
 # ── Claude chat ───────────────────────────────────────────────────────────────
 
 @app.post("/api/chat")
@@ -366,22 +474,24 @@ async def chat_history(limit: int = 50):
 
 class OrganizeConfirmRequest(BaseModel):
     confirmed: bool = False
+    custom_path: str | None = None  # override the category's default path
 
 
-@app.get("/api/organize/{category}")
-async def organize_plan(category: str):
-    """
-    Dry-run: return a plan of what would be moved, with fuzzy-match suggestions
-    for files that don't cleanly resolve.
-    """
+def _resolve_org_path(category: str, custom_path: str | None) -> str:
+    """Return the base directory to scan, honouring custom_path if given."""
+    if custom_path:
+        return custom_path
     path_map = settings.term_to_path
     if category not in path_map:
         raise HTTPException(status_code=400, detail=f"Unknown category: {category}")
+    return path_map[category]
 
-    base_path = path_map[category]
-    plan = build_organization_plan(base_path)
 
-    # Enrich moves with fuzzy-match confidence
+async def _build_enriched_plan(base_path: str, category: str = "") -> dict:
+    """Scan base_path and return an enriched plan with fuzzy-match confidence."""
+    franchise_map = await db.get_franchise_tags()
+    plan = build_organization_plan(base_path, franchise_map=franchise_map)
+
     existing_folders = [
         name for name in (os.listdir(base_path) if os.path.isdir(base_path) else [])
         if os.path.isdir(os.path.join(base_path, name))
@@ -393,7 +503,6 @@ async def organize_plan(category: str):
     needs_review = []
     for move in plan["moves"]:
         stem = os.path.basename(move["src"])[:-4]
-        # Check learned preferences first
         canonical = prefs.get(stem)
         if canonical:
             result = {"canonical": canonical, "confidence": 1.0, "action": "auto", "alternatives": []}
@@ -402,7 +511,9 @@ async def organize_plan(category: str):
 
         entry = {
             "src_filename": os.path.basename(move["src"]),
+            "src_path": move["src"],
             "suggested_folder": result["canonical"],
+            "dest_path": move["dest"],
             "confidence": result["confidence"],
             "action": result["action"],
             "alternatives": result["alternatives"],
@@ -422,15 +533,80 @@ async def organize_plan(category: str):
     }
 
 
+@app.get("/api/organize")
+async def list_organize_targets():
+    """Return all available category targets with their paths and mount status."""
+    path_map = settings.term_to_path
+    targets = []
+    for cat, path in path_map.items():
+        mounted = os.path.isdir(path)
+        folder_count = 0
+        loose_zips = 0
+        if mounted:
+            entries = os.listdir(path)
+            folder_count = sum(1 for e in entries if os.path.isdir(os.path.join(path, e)))
+            loose_zips = sum(1 for e in entries if e.lower().endswith(".zip"))
+        targets.append({
+            "category": cat,
+            "path": path,
+            "mounted": mounted,
+            "folder_count": folder_count,
+            "loose_zips": loose_zips,
+        })
+    return {"targets": targets}
+
+
+@app.get("/api/organize/browse")
+async def browse_directory(path: str = ""):
+    """
+    List subdirectories of a given path (for the folder picker).
+    Defaults to listing the top-level category roots.
+    """
+    if not path:
+        # Return root-level category paths
+        return {"path": "/", "dirs": list(settings.term_to_path.values())}
+
+    if not os.path.isdir(path):
+        raise HTTPException(status_code=404, detail=f"Directory not found: {path}")
+
+    try:
+        entries = sorted(os.listdir(path))
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    dirs = []
+    for name in entries:
+        full = os.path.join(path, name)
+        if os.path.isdir(full):
+            zip_count = sum(1 for f in os.listdir(full) if f.lower().endswith(".zip"))
+            dirs.append({"name": name, "path": full, "zip_count": zip_count})
+
+    return {"path": path, "dirs": dirs}
+
+
+@app.get("/api/organize/preferences")
+async def list_org_preferences():
+    """List all learned folder mappings."""
+    prefs = await load_preferences()
+    return {"count": len(prefs), "preferences": prefs}
+
+
+@app.get("/api/organize/{category}")
+async def organize_plan(category: str, custom_path: str | None = None):
+    """
+    Dry-run: return a full plan of what would be moved, with fuzzy-match confidence
+    for every file. Optionally override the scan path with custom_path.
+    """
+    base_path = _resolve_org_path(category, custom_path)
+    return await _build_enriched_plan(base_path, category)
+
+
 @app.post("/api/organize/{category}")
 async def organize_execute(category: str, req: OrganizeConfirmRequest):
-    """Execute the organization plan for a category."""
-    path_map = settings.term_to_path
-    if category not in path_map:
-        raise HTTPException(status_code=400, detail=f"Unknown category: {category}")
-
-    base_path = path_map[category]
-    plan = build_organization_plan(base_path)
+    """Execute the organization plan for a category (or custom path)."""
+    base_path = _resolve_org_path(category, req.custom_path)
+    franchise_map = await db.get_franchise_tags()
+    plan = build_organization_plan(base_path, franchise_map=franchise_map)
     result = execute_organization_plan(plan, dry_run=not req.confirmed)
     return result
 
@@ -445,10 +621,3 @@ async def save_org_preference(req: SavePreferenceRequest):
     """Teach the app a folder mapping (pattern → canonical name)."""
     await save_preference(req.pattern, req.canonical)
     return {"saved": True, "pattern": req.pattern, "canonical": req.canonical}
-
-
-@app.get("/api/organize/preferences")
-async def list_org_preferences():
-    """List all learned folder mappings."""
-    prefs = await load_preferences()
-    return {"count": len(prefs), "preferences": prefs}

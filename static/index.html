@@ -92,19 +92,29 @@
   .progress-fill { height: 100%; background: var(--accent); border-radius: 99px; transition: width 0.3s; }
 
   /* Organize panel */
-  .organize-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 16px; }
-  .org-card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px; }
-  .org-card h4 { font-size: 13px; font-weight: 600; margin-bottom: 8px; }
-  .org-card .btn { margin-top: 8px; }
-  #review-queue { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px; }
-  #review-queue h3 { font-size: 13px; font-weight: 600; margin-bottom: 10px; }
-  .review-item { display: flex; gap: 10px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
-  .review-item .filename { color: var(--muted); font-size: 12px; flex: 1; min-width: 200px; }
-  .review-item input[type=text] { width: 220px; }
-  .confidence { font-size: 11px; padding: 2px 6px; border-radius: 4px; }
+  .org-toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
+  .org-toolbar select, .org-toolbar input { flex: 0 0 auto; }
+  .org-toolbar .custom-path-input { flex: 1; min-width: 220px; }
+  .org-summary-bar { display: flex; gap: 20px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; margin-bottom: 14px; font-size: 13px; flex-wrap: wrap; }
+  .org-summary-bar .stat-item { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+  .org-summary-bar .stat-num { font-size: 22px; font-weight: 700; line-height: 1; }
+  .org-summary-bar .stat-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+  .org-moves-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .org-moves-table th { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--border); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); position: sticky; top: 0; background: var(--bg); z-index: 1; }
+  .org-moves-table td { padding: 6px 10px; border-bottom: 1px solid rgba(255,255,255,0.03); vertical-align: middle; }
+  .org-moves-table tr:hover td { background: rgba(255,255,255,0.02); }
+  .org-moves-table .src-file { color: var(--muted); max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .org-moves-table .dest-folder { font-weight: 600; color: var(--text); }
+  .org-moves-table .dest-folder input { width: 100%; min-width: 180px; font-weight: 600; }
+  .org-moves-table .arrow { color: var(--accent); font-size: 14px; padding: 0 4px; }
+  .confidence { font-size: 11px; padding: 2px 6px; border-radius: 4px; white-space: nowrap; }
   .conf-high   { background: #14532d; color: var(--green); }
   .conf-medium { background: #3b2a0a; color: var(--yellow); }
   .conf-low    { background: #450a0a; color: var(--red); }
+  .org-section-header { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); padding: 10px 0 6px; margin-top: 10px; border-top: 1px solid var(--border); }
+  .org-execute-bar { display: flex; gap: 12px; align-items: center; padding: 14px 0 4px; border-top: 1px solid var(--border); margin-top: 14px; }
+  .conflict-item { padding: 7px 10px; background: rgba(239,68,68,0.08); border: 1px solid rgba(239,68,68,0.2); border-radius: 6px; font-size: 12px; margin-bottom: 6px; }
+  .empty-dir-item { padding: 5px 10px; color: var(--muted); font-size: 12px; font-family: monospace; }
 
   /* Scrollbar */
   ::-webkit-scrollbar { width: 6px; height: 6px; }
@@ -173,6 +183,7 @@
         <div class="tab active" onclick="showTab('jobs')">Downloads</div>
         <div class="tab" onclick="showTab('library')">Library</div>
         <div class="tab" onclick="showTab('organize')">Organize</div>
+        <div class="tab" onclick="showTab('tags')">Franchise Tags</div>
       </div>
 
       <!-- Downloads tab -->
@@ -215,38 +226,148 @@
 
       <!-- Organize tab -->
       <div class="tab-panel" id="tab-organize">
-        <div class="organize-grid">
-          <div class="org-card">
-            <h4>🎬 Movies</h4>
-            <p style="font-size:12px;color:var(--muted)">Scan and organize zip variants into model subfolders.</p>
-            <button class="btn btn-secondary btn-sm" onclick="planOrganize('Movies')">Preview</button>
-            <button class="btn btn-primary btn-sm" onclick="executeOrganize('Movies')" style="margin-top:6px">Organize</button>
+
+        <!-- Folder selector toolbar -->
+        <div class="org-toolbar">
+          <select id="org-category" onchange="onOrgCategoryChange()" style="width:160px">
+            <option value="">Loading…</option>
+          </select>
+          <input type="text" id="org-custom-path" class="custom-path-input" placeholder="Or enter a custom path…" oninput="onOrgCustomPathInput()">
+          <button class="btn btn-secondary" onclick="previewOrganize()">🔍 Preview Changes</button>
+        </div>
+
+        <!-- Folder targets quick-cards (populated from API) -->
+        <div id="org-targets" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px"></div>
+
+        <!-- Preview area -->
+        <div id="org-preview-area" style="display:none">
+
+          <!-- Summary bar -->
+          <div class="org-summary-bar" id="org-summary-bar"></div>
+
+          <!-- Scrollable moves table -->
+          <div style="background:var(--panel);border:1px solid var(--border);border-radius:10px;overflow:hidden">
+            <div style="max-height:420px;overflow-y:auto">
+              <table class="org-moves-table" id="org-moves-table">
+                <thead>
+                  <tr>
+                    <th style="width:38%">Source file</th>
+                    <th style="width:8px"></th>
+                    <th style="width:16%">Franchise</th>
+                    <th style="width:30%">Destination folder</th>
+                    <th style="width:8%">Confidence</th>
+                  </tr>
+                </thead>
+                <tbody id="org-moves-tbody"></tbody>
+              </table>
+            </div>
+
+            <!-- Conflicts section -->
+            <div id="org-conflicts-section" style="display:none;padding:12px 14px">
+              <div class="org-section-header">⚠️ Synology conflict folders to merge</div>
+              <div id="org-conflicts-list"></div>
+            </div>
+
+            <!-- Empty dirs section -->
+            <div id="org-empty-section" style="display:none;padding:12px 14px">
+              <div class="org-section-header">🗑 Empty directories to remove</div>
+              <div id="org-empty-list"></div>
+            </div>
           </div>
-          <div class="org-card">
-            <h4>🎮 Video Games</h4>
-            <p style="font-size:12px;color:var(--muted)">Scan and organize zip variants into model subfolders.</p>
-            <button class="btn btn-secondary btn-sm" onclick="planOrganize('VG')">Preview</button>
-            <button class="btn btn-primary btn-sm" onclick="executeOrganize('VG')" style="margin-top:6px">Organize</button>
-          </div>
-          <div class="org-card">
-            <h4>🦸 Marvel</h4>
-            <p style="font-size:12px;color:var(--muted)">Scan and organize zip variants into model subfolders.</p>
-            <button class="btn btn-secondary btn-sm" onclick="planOrganize('Marvel')">Preview</button>
-            <button class="btn btn-primary btn-sm" onclick="executeOrganize('Marvel')" style="margin-top:6px">Organize</button>
+
+          <!-- Execute bar — only shown after preview -->
+          <div class="org-execute-bar">
+            <button class="btn btn-primary" id="org-execute-btn" onclick="executeOrganize()">
+              ▶ Execute Organization
+            </button>
+            <span style="color:var(--muted);font-size:12px" id="org-execute-hint">
+              Review the plan above, then click Execute to apply changes.
+            </span>
           </div>
         </div>
 
-        <div id="organize-output" style="background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:14px;font-size:13px;min-height:100px">
-          <span style="color:var(--muted)">Click Preview or Organize to see results.</span>
+        <!-- Result message -->
+        <div id="org-result" style="display:none;background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:14px;margin-top:14px;font-size:13px"></div>
+      </div>
+
+      <!-- Franchise Tags tab -->
+      <div class="tab-panel" id="tab-tags">
+
+        <!-- Toolbar -->
+        <div style="display:flex;gap:10px;align-items:center;margin-bottom:16px;flex-wrap:wrap">
+          <button class="btn btn-secondary" onclick="loadTags()">↻ Refresh</button>
+          <button class="btn" style="background:#4c1d95;color:#ddd8fe" onclick="suggestTags()">✨ Suggest with Claude</button>
+          <span style="color:var(--muted);font-size:12px" id="tags-hint">Claude reads your job list and groups models by franchise automatically.</span>
+          <div style="margin-left:auto;display:flex;gap:8px">
+            <input type="text" id="tags-filter" placeholder="Filter…" oninput="renderTagsTable()" style="width:180px">
+            <select id="tags-term-filter" onchange="renderTagsTable()" style="width:130px">
+              <option value="">All categories</option>
+              <option value="Movies">Movies</option>
+              <option value="VG">Video Games</option>
+              <option value="Marvel">Marvel</option>
+            </select>
+          </div>
         </div>
 
-        <div id="review-queue" style="display:none;margin-top:16px">
-          <h3>⚠️ Needs Review — fuzzy confidence below threshold</h3>
-          <p style="font-size:12px;color:var(--muted);margin-bottom:10px">
-            These files didn't match an existing folder cleanly. Confirm or correct the folder name.
-          </p>
-          <div id="review-items"></div>
-          <button class="btn btn-primary" style="margin-top:12px" onclick="submitReviews()">Save Preferences & Organize</button>
+        <!-- Suggest preview panel (shown after Claude suggests, before saving) -->
+        <div id="tags-suggest-panel" style="display:none;background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:16px">
+          <div style="font-weight:700;margin-bottom:10px;font-size:14px">✨ Claude's suggestions — review before saving</div>
+          <div style="font-size:12px;color:var(--muted);margin-bottom:10px">
+            Edit any franchise name below, then click Save All to apply. Models marked "Standalone" won't be saved.
+          </div>
+          <div style="max-height:300px;overflow-y:auto;margin-bottom:12px">
+            <table style="width:100%;border-collapse:collapse;font-size:13px" id="suggest-table">
+              <thead>
+                <tr>
+                  <th style="text-align:left;padding:6px 10px;border-bottom:1px solid var(--border);font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px">Model</th>
+                  <th style="text-align:left;padding:6px 10px;border-bottom:1px solid var(--border);font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px">Franchise / Universe</th>
+                  <th style="width:40px"></th>
+                </tr>
+              </thead>
+              <tbody id="suggest-tbody"></tbody>
+            </table>
+          </div>
+          <div style="display:flex;gap:10px">
+            <button class="btn btn-primary" onclick="saveSuggestions()">Save All Non-Standalone</button>
+            <button class="btn btn-secondary" onclick="document.getElementById('tags-suggest-panel').style.display='none'">Dismiss</button>
+          </div>
+        </div>
+
+        <!-- Add new tag row -->
+        <div style="display:flex;gap:8px;margin-bottom:14px;align-items:center;flex-wrap:wrap">
+          <input type="text" id="new-tag-model" placeholder="Model name" style="flex:1;min-width:200px">
+          <input type="text" id="new-tag-franchise" placeholder="Franchise / Universe" style="flex:1;min-width:180px">
+          <select id="new-tag-term" style="width:130px">
+            <option value="Movies">Movies</option>
+            <option value="VG">Video Games</option>
+            <option value="Marvel">Marvel</option>
+          </select>
+          <button class="btn btn-primary btn-sm" onclick="addTag()">+ Add Tag</button>
+        </div>
+
+        <!-- Tags table -->
+        <div style="background:var(--panel);border:1px solid var(--border);border-radius:10px;overflow:hidden">
+          <div style="max-height:500px;overflow-y:auto">
+            <table style="width:100%;border-collapse:collapse;font-size:13px" id="tags-table">
+              <thead>
+                <tr style="position:sticky;top:0;background:var(--panel)">
+                  <th style="text-align:left;padding:8px 12px;border-bottom:1px solid var(--border);font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px">Model Name</th>
+                  <th style="text-align:left;padding:8px 12px;border-bottom:1px solid var(--border);font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px">Franchise / Universe</th>
+                  <th style="text-align:left;padding:8px 12px;border-bottom:1px solid var(--border);font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px">Category</th>
+                  <th style="text-align:left;padding:8px 12px;border-bottom:1px solid var(--border);font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px">Source</th>
+                  <th style="width:40px;padding:8px 12px;border-bottom:1px solid var(--border)"></th>
+                </tr>
+              </thead>
+              <tbody id="tags-tbody">
+                <tr><td colspan="5" class="empty">No franchise tags yet. Click "Suggest with Claude" to auto-generate.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div style="font-size:12px;color:var(--muted);margin-top:10px">
+          💡 Once tags are set, the Organize tab will nest files:
+          <code style="background:var(--bg);padding:2px 6px;border-radius:3px">Movies / Lord of the Rings / Gandalf Wizard Pose /</code>
         </div>
       </div>
     </div>
@@ -271,6 +392,7 @@ function showTab(id) {
   document.getElementById('tab-' + id).classList.add('active');
   if (id === 'jobs') loadJobs();
   if (id === 'library') loadLibrary();
+  if (id === 'tags') loadTags();
 }
 
 function badge(status) {
@@ -386,83 +508,199 @@ async function loadLibrary() {
 
 // ── Organize ──────────────────────────────────────────────────────────────────
 let _currentPlan = null;
-let _reviewDecisions = {};
 
-async function planOrganize(category) {
-  const output = document.getElementById('organize-output');
-  output.innerHTML = '<span style="color:var(--muted)">Scanning…</span>';
+async function loadOrgTargets() {
   try {
-    const plan = await api('GET', `/api/organize/${category}`);
-    _currentPlan = plan;
-    const s = plan.summary;
-    output.innerHTML = `
-      <div style="margin-bottom:12px">
-        <b>${category}</b> — ${plan.base_path}<br>
-        <span style="color:var(--muted)">To move: <b style="color:var(--text)">${s.to_move}</b> &nbsp;
-        Already correct: <b>${s.already_correct}</b> &nbsp;
-        Needs review: <b style="color:var(--yellow)">${plan.needs_review.length}</b> &nbsp;
-        Conflicts: <b style="color:var(--red)">${s.conflict_folders}</b> &nbsp;
-        Empty dirs: <b>${s.empty_dirs}</b></span>
+    const data = await api('GET', '/api/organize');
+    const sel = document.getElementById('org-category');
+    const icons = { Movies: '🎬', VG: '🎮', Marvel: '🦸', Wildcard: '✨' };
+    sel.innerHTML = data.targets.map(t =>
+      `<option value="${t.category}" ${!t.mounted ? 'disabled' : ''}>${icons[t.category] || '📁'} ${t.category}${t.mounted ? '' : ' (not mounted)'}</option>`
+    ).join('');
+
+    // Quick-cards
+    const cards = document.getElementById('org-targets');
+    cards.innerHTML = data.targets.map(t => `
+      <div style="background:var(--panel);border:1px solid ${t.mounted ? 'var(--border)' : '#2a1a1a'};border-radius:8px;padding:10px 14px;min-width:160px;cursor:${t.mounted ? 'pointer' : 'default'};opacity:${t.mounted ? '1' : '0.5'}"
+           onclick="${t.mounted ? `quickPreview('${t.category}')` : ''}">
+        <div style="font-weight:700;font-size:13px">${icons[t.category] || '📁'} ${t.category}</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:3px">${t.mounted ? `${t.folder_count} folders · ${t.loose_zips} loose zips` : 'Not mounted on this NAS'}</div>
       </div>
-      ${plan.all_moves.slice(0,20).map(m => `
-        <div style="font-size:12px;padding:3px 0;border-bottom:1px solid var(--border)">
-          <span style="color:var(--muted)">${m.src_filename}</span>
-          → <b>${m.suggested_folder}</b>
-          <span class="confidence ${m.confidence >= 0.92 ? 'conf-high' : m.confidence >= 0.72 ? 'conf-medium' : 'conf-low'}">${Math.round(m.confidence*100)}%</span>
-        </div>
-      `).join('')}
-      ${plan.all_moves.length > 20 ? `<div style="color:var(--muted);font-size:12px;margin-top:6px">…and ${plan.all_moves.length - 20} more</div>` : ''}
-    `;
-
-    // Show review queue if needed
-    if (plan.needs_review.length > 0) {
-      const reviewDiv = document.getElementById('review-queue');
-      reviewDiv.style.display = 'block';
-      document.getElementById('review-items').innerHTML = plan.needs_review.map((m, i) => `
-        <div class="review-item" data-idx="${i}" data-pattern="${m.src_filename.replace('.zip','')}">
-          <div class="filename">${m.src_filename}</div>
-          <span class="confidence conf-${m.confidence >= 0.72 ? 'medium' : 'low'}">${Math.round(m.confidence*100)}%</span>
-          <input type="text" class="review-canonical" value="${m.suggested_folder}" placeholder="Folder name">
-          ${m.alternatives.length ? `<span style="font-size:11px;color:var(--muted)">Alt: ${m.alternatives.slice(0,2).join(', ')}</span>` : ''}
-        </div>
-      `).join('');
-    } else {
-      document.getElementById('review-queue').style.display = 'none';
-    }
-  } catch (e) { output.innerHTML = `<span style="color:var(--red)">Error: ${e.message}</span>`; }
+    `).join('');
+  } catch (e) {
+    console.error('loadOrgTargets error', e);
+  }
 }
 
-async function executeOrganize(category) {
-  if (!confirm(`Organize ${category} folder? This will move files.`)) return;
-  const output = document.getElementById('organize-output');
-  output.innerHTML = '<span style="color:var(--muted)">Organizing…</span>';
+function onOrgCategoryChange() {
+  document.getElementById('org-custom-path').value = '';
+  _currentPlan = null;
+  document.getElementById('org-preview-area').style.display = 'none';
+  document.getElementById('org-result').style.display = 'none';
+}
+
+function onOrgCustomPathInput() {
+  if (document.getElementById('org-custom-path').value.trim()) {
+    document.getElementById('org-category').value = '';
+  }
+}
+
+function quickPreview(category) {
+  document.getElementById('org-category').value = category;
+  document.getElementById('org-custom-path').value = '';
+  previewOrganize();
+}
+
+function _confClass(c) {
+  return c >= 0.92 ? 'conf-high' : c >= 0.72 ? 'conf-medium' : 'conf-low';
+}
+
+async function previewOrganize() {
+  const category = document.getElementById('org-category').value;
+  const customPath = document.getElementById('org-custom-path').value.trim();
+  if (!category && !customPath) { alert('Select a folder or enter a custom path.'); return; }
+
+  const previewArea = document.getElementById('org-preview-area');
+  const tbody = document.getElementById('org-moves-tbody');
+  const summaryBar = document.getElementById('org-summary-bar');
+  previewArea.style.display = 'block';
+  document.getElementById('org-result').style.display = 'none';
+  tbody.innerHTML = '<tr><td colspan="4" style="color:var(--muted);padding:16px">Scanning…</td></tr>';
+  summaryBar.innerHTML = '';
+
   try {
-    const res = await api('POST', `/api/organize/${category}`, { confirmed: true });
-    output.innerHTML = `
-      <b>${category}</b> organized!<br>
-      Moved: <b style="color:var(--green)">${res.moved}</b> &nbsp;
-      Skipped: <b>${res.skipped}</b> &nbsp;
-      Dirs removed: <b>${res.dirs_removed}</b>
-      ${res.errors.length ? `<br><span style="color:var(--red)">Errors: ${res.errors.join(', ')}</span>` : ''}
+    const qs = customPath ? `?custom_path=${encodeURIComponent(customPath)}` : '';
+    const plan = await api('GET', `/api/organize/${category || 'Movies'}${qs}`);
+    _currentPlan = plan;
+
+    const s = plan.summary;
+    const reviewCount = plan.needs_review.length;
+
+    // Summary bar
+    summaryBar.innerHTML = `
+      <div class="stat-item"><span class="stat-num" style="color:var(--accent)">${s.to_move}</span><span class="stat-label">To move</span></div>
+      <div class="stat-item"><span class="stat-num" style="color:var(--green)">${s.already_correct}</span><span class="stat-label">Already sorted</span></div>
+      <div class="stat-item"><span class="stat-num" style="color:${reviewCount > 0 ? 'var(--yellow)' : 'var(--muted)'}">${reviewCount}</span><span class="stat-label">Need review</span></div>
+      <div class="stat-item"><span class="stat-num" style="color:${s.conflict_folders > 0 ? 'var(--red)' : 'var(--muted)'}">${s.conflict_folders}</span><span class="stat-label">Conflicts</span></div>
+      <div class="stat-item"><span class="stat-num" style="color:var(--muted)">${s.empty_dirs}</span><span class="stat-label">Empty dirs</span></div>
+      <div style="margin-left:auto;font-size:12px;color:var(--muted);align-self:center">${plan.base_path}</div>
     `;
-  } catch (e) { output.innerHTML = `<span style="color:var(--red)">Error: ${e.message}</span>`; }
+
+    // Moves table — ALL rows
+    if (plan.all_moves.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--muted);padding:24px">Nothing to move — everything is already organized!</td></tr>';
+    } else {
+      tbody.innerHTML = plan.all_moves.map((m, i) => {
+        const needsReview = m.action === 'review' || m.action === 'ask';
+        const confClass = _confClass(m.confidence);
+        const alts = m.alternatives.length ? `<div style="font-size:10px;color:var(--muted);margin-top:2px">Alt: ${m.alternatives.slice(0,2).join(', ')}</div>` : '';
+        const franchiseCell = m.franchise
+          ? `<span style="font-size:11px;padding:2px 6px;border-radius:3px;background:#1e3a5f;color:#60a5fa">${m.franchise}</span>`
+          : `<span style="color:var(--muted);font-size:11px">—</span>`;
+        return `
+          <tr data-idx="${i}" data-pattern="${m.src_filename.replace(/\.zip$/i,'')}">
+            <td class="src-file" title="${m.src_filename}">${m.src_filename}</td>
+            <td class="arrow">→</td>
+            <td style="padding:6px 10px">${franchiseCell}</td>
+            <td class="dest-folder">
+              ${needsReview
+                ? `<input type="text" class="review-canonical" value="${m.suggested_folder}" placeholder="Folder name">`
+                : `<span>${m.suggested_folder}</span>`}
+              ${alts}
+            </td>
+            <td><span class="confidence ${confClass}">${Math.round(m.confidence * 100)}%</span></td>
+          </tr>`;
+      }).join('');
+    }
+
+    // Conflicts
+    const conflictsSection = document.getElementById('org-conflicts-section');
+    if (plan.conflict_folders.length > 0) {
+      conflictsSection.style.display = 'block';
+      document.getElementById('org-conflicts-list').innerHTML = plan.conflict_folders.map(c =>
+        `<div class="conflict-item">📁 <b>${c.conflict_folder.split('/').pop()}</b> → merge into <b>${c.canonical_name}</b></div>`
+      ).join('');
+    } else {
+      conflictsSection.style.display = 'none';
+    }
+
+    // Empty dirs
+    const emptySection = document.getElementById('org-empty-section');
+    if (plan.empty_dirs.length > 0) {
+      emptySection.style.display = 'block';
+      document.getElementById('org-empty-list').innerHTML = plan.empty_dirs.map(d =>
+        `<div class="empty-dir-item">${d.split('/').pop()}</div>`
+      ).join('');
+    } else {
+      emptySection.style.display = 'none';
+    }
+
+    // Update execute button hint
+    const executeHint = document.getElementById('org-execute-hint');
+    if (s.to_move === 0 && s.conflict_folders === 0) {
+      document.getElementById('org-execute-btn').disabled = true;
+      executeHint.textContent = 'Nothing to do — folder is already organized.';
+    } else {
+      document.getElementById('org-execute-btn').disabled = false;
+      executeHint.textContent = `Will move ${s.to_move} file${s.to_move !== 1 ? 's' : ''}${reviewCount > 0 ? ` — ${reviewCount} with review suggestions (edit above to adjust)` : ''}.`;
+    }
+
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="4" style="color:var(--red);padding:16px">Error: ${e.message}</td></tr>`;
+  }
 }
 
-async function submitReviews() {
-  const items = document.querySelectorAll('.review-item');
-  let saved = 0;
-  for (const item of items) {
-    const pattern = item.dataset.pattern;
-    const canonical = item.querySelector('.review-canonical').value.trim();
-    if (pattern && canonical) {
-      await api('POST', '/api/organize/preferences', { pattern, canonical });
-      saved++;
+async function executeOrganize() {
+  if (!_currentPlan) { alert('Run Preview first.'); return; }
+
+  const s = _currentPlan.summary;
+  const label = _currentPlan.category || _currentPlan.base_path;
+  if (!confirm(`Move ${s.to_move} file${s.to_move !== 1 ? 's' : ''} in ${label}?\n\nThis cannot be undone.`)) return;
+
+  // Save any edited review decisions first
+  const reviewRows = document.querySelectorAll('#org-moves-tbody tr[data-pattern]');
+  for (const row of reviewRows) {
+    const input = row.querySelector('.review-canonical');
+    if (input) {
+      const pattern = row.dataset.pattern;
+      const canonical = input.value.trim();
+      if (pattern && canonical) {
+        await api('POST', '/api/organize/preferences', { pattern, canonical });
+      }
     }
   }
-  document.getElementById('review-queue').style.display = 'none';
-  appendChat('system', `Saved ${saved} folder preferences. Re-running organize…`);
-  const cat = _currentPlan?.category;
-  if (cat) await executeOrganize(cat);
+
+  const btn = document.getElementById('org-execute-btn');
+  btn.disabled = true;
+  btn.textContent = '⏳ Organizing…';
+
+  try {
+    const customPath = document.getElementById('org-custom-path').value.trim() || null;
+    const category = document.getElementById('org-category').value || 'Movies';
+    const res = await api('POST', `/api/organize/${category}`, { confirmed: true, custom_path: customPath });
+
+    const resultDiv = document.getElementById('org-result');
+    resultDiv.style.display = 'block';
+    resultDiv.innerHTML = `
+      <div style="font-weight:700;margin-bottom:8px;font-size:15px">✅ Organization complete</div>
+      <div style="display:flex;gap:24px;font-size:13px">
+        <span>Moved: <b style="color:var(--green)">${res.moved}</b></span>
+        <span>Skipped: <b>${res.skipped}</b></span>
+        <span>Dirs removed: <b>${res.dirs_removed}</b></span>
+      </div>
+      ${res.errors.length ? `<div style="color:var(--red);margin-top:8px;font-size:12px">Errors:<br>${res.errors.map(e => `• ${e}`).join('<br>')}</div>` : ''}
+    `;
+
+    // Refresh preview to show new state
+    document.getElementById('org-preview-area').style.display = 'none';
+    _currentPlan = null;
+  } catch (e) {
+    document.getElementById('org-result').style.display = 'block';
+    document.getElementById('org-result').innerHTML = `<span style="color:var(--red)">Error: ${e.message}</span>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '▶ Execute Organization';
+  }
 }
 
 // ── Chat ──────────────────────────────────────────────────────────────────────
@@ -513,10 +751,128 @@ async function loadChatHistory() {
   history.forEach(m => appendChat(m.role, m.content));
 }
 
+// ── Franchise Tags ────────────────────────────────────────────────────────────
+let _allTags = [];
+let _pendingSuggestions = {};
+
+async function loadTags() {
+  try {
+    const data = await api('GET', '/api/tags');
+    _allTags = data.tags;
+    renderTagsTable();
+  } catch (e) { console.error('loadTags', e); }
+}
+
+function renderTagsTable() {
+  const filter = document.getElementById('tags-filter').value.toLowerCase();
+  const termFilter = document.getElementById('tags-term-filter').value;
+  const tbody = document.getElementById('tags-tbody');
+
+  let rows = _allTags;
+  if (filter) rows = rows.filter(t => t.model_name.toLowerCase().includes(filter) || t.franchise.toLowerCase().includes(filter));
+  if (termFilter) rows = rows.filter(t => t.term === termFilter);
+
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="5" class="empty">${_allTags.length ? 'No matches.' : 'No franchise tags yet.'}</td></tr>`;
+    return;
+  }
+
+  // Group by franchise for display
+  const byFranchise = {};
+  rows.forEach(t => { (byFranchise[t.franchise] = byFranchise[t.franchise] || []).push(t); });
+
+  tbody.innerHTML = Object.entries(byFranchise).sort(([a],[b]) => a.localeCompare(b)).flatMap(([franchise, tags]) =>
+    tags.map((t, i) => `
+      <tr>
+        <td style="padding:6px 12px">${t.model_name}</td>
+        <td style="padding:6px 12px">
+          ${i === 0 ? `<span style="font-weight:700;color:var(--accent2)">${franchise}</span>` : `<span style="color:var(--muted);font-size:11px">↳</span>`}
+        </td>
+        <td style="padding:6px 12px;color:var(--muted);font-size:12px">${t.term || '—'}</td>
+        <td style="padding:6px 12px">
+          <span style="font-size:11px;padding:1px 5px;border-radius:3px;background:${t.source==='claude' ? '#1e3a5f' : '#1e293b'};color:${t.source==='claude' ? '#60a5fa' : 'var(--muted)'}">
+            ${t.source}
+          </span>
+        </td>
+        <td style="padding:6px 12px;text-align:center">
+          <button class="btn btn-sm" style="background:#450a0a;color:#fca5a5;padding:2px 8px" onclick="deleteTag('${t.model_name.replace(/'/g,"\\'")}')">✕</button>
+        </td>
+      </tr>`)
+  ).join('');
+}
+
+async function addTag() {
+  const model_name = document.getElementById('new-tag-model').value.trim();
+  const franchise  = document.getElementById('new-tag-franchise').value.trim();
+  const term       = document.getElementById('new-tag-term').value;
+  if (!model_name || !franchise) { alert('Enter both a model name and franchise.'); return; }
+  await api('POST', '/api/tags', { model_name, franchise, term, source: 'user' });
+  document.getElementById('new-tag-model').value = '';
+  document.getElementById('new-tag-franchise').value = '';
+  await loadTags();
+}
+
+async function deleteTag(model_name) {
+  if (!confirm(`Remove franchise tag for "${model_name}"?`)) return;
+  await api('DELETE', `/api/tags/${encodeURIComponent(model_name)}`);
+  await loadTags();
+}
+
+async function suggestTags() {
+  const btn = document.querySelector('button[onclick="suggestTags()"]');
+  const hint = document.getElementById('tags-hint');
+  btn.disabled = true;
+  hint.textContent = '⏳ Asking Claude to classify your models… (this may take 10–20 seconds)';
+  try {
+    const termFilter = document.getElementById('tags-term-filter').value || null;
+    const res = await api('POST', '/api/tags/suggest', { model_names: null, term: termFilter });
+    _pendingSuggestions = res.suggestions;
+
+    // Populate suggest table
+    const tbody = document.getElementById('suggest-tbody');
+    tbody.innerHTML = Object.entries(_pendingSuggestions).sort(([,a],[,b]) => a.localeCompare(b)).map(([model, franchise]) => `
+      <tr data-model="${model.replace(/"/g,'&quot;')}">
+        <td style="padding:5px 10px">${model}</td>
+        <td style="padding:5px 10px">
+          <input type="text" class="suggest-franchise" value="${franchise}" style="width:100%">
+        </td>
+        <td style="padding:5px 10px;text-align:center">
+          ${franchise === 'Standalone' ? `<span style="color:var(--muted);font-size:11px">skip</span>` : ''}
+        </td>
+      </tr>
+    `).join('');
+
+    document.getElementById('tags-suggest-panel').style.display = 'block';
+    hint.textContent = `Claude suggested ${res.model_count} groupings — review and save below.`;
+  } catch (e) {
+    hint.textContent = `Error: ${e.message}`;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function saveSuggestions() {
+  // Collect edited values from the suggest table
+  const rows = document.querySelectorAll('#suggest-tbody tr[data-model]');
+  const suggestions = {};
+  rows.forEach(row => {
+    const model = row.dataset.model;
+    const franchise = row.querySelector('.suggest-franchise').value.trim();
+    if (franchise && franchise.toLowerCase() !== 'standalone') {
+      suggestions[model] = franchise;
+    }
+  });
+  const res = await api('POST', '/api/tags/apply-suggestions', { suggestions });
+  document.getElementById('tags-suggest-panel').style.display = 'none';
+  document.getElementById('tags-hint').textContent = `Saved ${res.saved} franchise tags from Claude's suggestions.`;
+  await loadTags();
+}
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 loadJobs();
 loadChatHistory();
 refreshStatus();
+loadOrgTargets();
 setInterval(refreshStatus, 10000);
 setInterval(() => {
   const activeTab = document.querySelector('.tab-panel.active');
