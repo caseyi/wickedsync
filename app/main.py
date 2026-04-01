@@ -9,6 +9,7 @@ Endpoints:
   GET  /api/jobs/{id}         → Job detail + files
   POST /api/import/csv        → Import CSV and queue jobs
   POST /api/import/url        → Queue one URL (same as POST /api/jobs)
+  POST /api/ingest            → Accept pre-resolved CDN URLs from browser scraper
   POST /api/worker/start      → Start download worker
   POST /api/worker/stop       → Stop download worker
   GET  /api/library/{cat}     → Browse NAS folder
@@ -21,6 +22,7 @@ import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -56,6 +58,16 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="WickedSync", version="1.0.0", lifespan=lifespan)
+
+# Allow cross-origin requests so the Claude-in-Chrome scraper can POST
+# CDN URLs to this API from inside a Gumroad browser tab.
+# This is a local-network service — broad CORS is fine here.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Serve the static frontend
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "..", "static")
@@ -187,6 +199,98 @@ async def import_csv(req: ImportCsvRequest):
 async def import_url(req: AddJobRequest):
     """Alias for add_job — convenient for single-URL API clients."""
     return await add_job(req)
+
+
+# ── Browser scraper ingest ────────────────────────────────────────────────────
+#
+# This is the endpoint that Claude-in-Chrome calls after scraping CDN URLs
+# from Gumroad product pages. No Gumroad auth needed on the NAS side —
+# the browser already resolved the URLs (same public IP as NAS).
+#
+# Typical call from browser JS:
+#   await fetch('http://192.168.1.168:8088/api/ingest', {
+#     method: 'POST',
+#     headers: {'Content-Type': 'application/json'},
+#     body: JSON.stringify({ files: [...] })
+#   })
+
+class IngestFile(BaseModel):
+    cdn_url: str                  # CloudFront or files.gumroad.com URL
+    filename: str                 # e.g. "Wicked - Blade (Non Supported).zip"
+    model_name: str               # e.g. "Blade Sculpture"
+    term: str                     # Movies | VG | Marvel | Wildcard
+    dest_path: str | None = None  # override destination; app derives it if None
+
+
+class IngestRequest(BaseModel):
+    files: list[IngestFile]
+    # Optional: group all these files under a single named job
+    job_name: str | None = None
+
+
+@app.post("/api/ingest", status_code=201)
+async def ingest_files(req: IngestRequest):
+    """
+    Accept pre-resolved CDN URLs from the Claude-in-Chrome browser scraper
+    and queue them for immediate download.
+
+    Unlike POST /api/jobs (which triggers Gumroad discovery via Playwright),
+    this endpoint skips discovery entirely — the CDN URLs are already known.
+    Files go straight into the download queue.
+    """
+    if not req.files:
+        raise HTTPException(status_code=400, detail="No files provided")
+
+    # Group by model_name so each product gets its own job row
+    from collections import defaultdict
+    by_model: dict[str, list[IngestFile]] = defaultdict(list)
+    for f in req.files:
+        by_model[f.model_name].append(f)
+
+    created_jobs = []
+    queued_files = 0
+
+    for model_name, files in by_model.items():
+        term = files[0].term
+        # Use a synthetic "already-ingested" URL as the product_url key
+        synthetic_url = f"ingest://{model_name.lower().replace(' ', '-')}"
+
+        # Reuse existing job if one already exists for this model
+        existing = await db.list_jobs()
+        job_id = next(
+            (j["id"] for j in existing if j["model_name"] == model_name and j["term"] == term),
+            None,
+        )
+
+        if job_id is None:
+            job_id = await db.create_job(model_name, term, synthetic_url)
+            await db.update_job(job_id, status="queued", content_url=synthetic_url)
+
+        base_path = settings.term_to_path.get(term, settings.movies_path)
+        from app.organizer import dest_path_for_file, clean_filename
+
+        for f in files:
+            filename = clean_filename(f.filename)
+            dest = f.dest_path or dest_path_for_file(base_path, filename)
+            file_id = await db.create_file(
+                job_id=job_id,
+                filename=filename,
+                cdn_url=f.cdn_url,
+                dest_path=dest,
+            )
+            queued_files += 1
+
+        # Update job file count
+        file_count = len(await db.list_files(job_id))
+        await db.update_job(job_id, file_count=file_count, status="queued")
+        created_jobs.append({"job_id": job_id, "model_name": model_name, "files": len(files)})
+
+    return {
+        "result": "ingested",
+        "jobs": created_jobs,
+        "total_files_queued": queued_files,
+        "message": f"Queued {queued_files} files across {len(created_jobs)} models. Worker will download automatically.",
+    }
 
 
 # ── Worker control ────────────────────────────────────────────────────────────
