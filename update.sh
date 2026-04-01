@@ -52,23 +52,10 @@ if [[ "${1:-}" == "--rollback" ]]; then
 fi
 
 # ── Determine target version ──────────────────────────────────────────────────
+# Pass a specific tag (e.g. v1.2.0) to pin a version; omit to get :latest.
 TARGET="${1:-latest}"
-
-# Fetch latest tag from GitHub if not specified
-if [[ "$TARGET" == "latest" ]]; then
-    info "Fetching latest release tag from GitHub..."
-    LATEST=$(curl -s "https://api.github.com/repos/${REPO}/releases/latest" \
-             | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"\(.*\)".*/\1/')
-    if [[ -z "$LATEST" ]]; then
-        warn "Could not fetch latest tag, falling back to 'latest' image tag"
-        TARGET="latest"
-    else
-        TARGET="$LATEST"
-        info "Latest release: $TARGET"
-    fi
-fi
-
 NEW_IMAGE="${IMAGE}:${TARGET}"
+info "Target: $NEW_IMAGE"
 
 # ── Save current version for rollback ─────────────────────────────────────────
 CURRENT_IMAGE=$(docker inspect --format='{{.Config.Image}}' "$CONTAINER" 2>/dev/null || echo "")
