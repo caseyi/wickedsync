@@ -82,7 +82,7 @@ fi
 info "Restarting container with new image..."
 # Update the image tag in docker-compose.yml so it's persistent
 if grep -q "image:" "$COMPOSE_FILE" 2>/dev/null; then
-    sed -i.bak "s|image: .*${REPO}.*|    image: ${NEW_IMAGE}|" "$COMPOSE_FILE"
+    sed -i.bak "s|image: .*${REPO}.*|image: ${NEW_IMAGE}|" "$COMPOSE_FILE"
 else
     warn "No 'image:' line found in $COMPOSE_FILE; using docker pull only"
 fi
