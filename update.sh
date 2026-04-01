@@ -35,6 +35,13 @@ info()  { echo -e "${GREEN}▶${NC} $*"; }
 warn()  { echo -e "${YELLOW}⚠${NC} $*"; }
 error() { echo -e "${RED}✗${NC} $*"; }
 
+# Synology ships old standalone docker-compose; newer systems use docker compose
+if command -v docker-compose &>/dev/null; then
+    DC="docker-compose"
+else
+    DC="docker compose"
+fi
+
 # ── Rollback mode ─────────────────────────────────────────────────────────────
 if [[ "${1:-}" == "--rollback" ]]; then
     if [[ ! -f "$VERSION_FILE" ]]; then
@@ -46,7 +53,7 @@ if [[ "${1:-}" == "--rollback" ]]; then
     export WICKEDSYNC_IMAGE="$PREV"
     # Rewrite docker-compose image reference
     sed -i.bak "s|image: .*|image: $PREV|" "$COMPOSE_FILE" || true
-    docker compose -f "$COMPOSE_FILE" up -d --force-recreate "$CONTAINER"
+    $DC -f "$COMPOSE_FILE" up -d --force-recreate "$CONTAINER"
     info "Rollback complete. Current version: $PREV"
     exit 0
 fi
@@ -80,7 +87,7 @@ else
     warn "No 'image:' line found in $COMPOSE_FILE; using docker pull only"
 fi
 
-docker compose -f "$COMPOSE_FILE" up -d --force-recreate "$CONTAINER"
+$DC -f "$COMPOSE_FILE" up -d --force-recreate "$CONTAINER"
 
 # ── Health check ───────────────────────────────────────────────────────────────
 info "Waiting for container to become healthy..."
@@ -111,7 +118,7 @@ else
         if grep -q "image:" "$COMPOSE_FILE" 2>/dev/null; then
             sed -i.bak "s|image: .*${REPO}.*|    image: ${CURRENT_IMAGE}|" "$COMPOSE_FILE"
         fi
-        docker compose -f "$COMPOSE_FILE" up -d --force-recreate "$CONTAINER"
+        $DC -f "$COMPOSE_FILE" up -d --force-recreate "$CONTAINER"
 
         # Verify rollback
         sleep 5
