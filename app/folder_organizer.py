@@ -285,6 +285,288 @@ def build_organization_plan(
     }
 
 
+def scan_library_health(
+    base_dir: str,
+    cross_category_dirs: dict[str, str] | None = None,
+) -> dict:
+    """
+    Deep health scan of a library directory.
+
+    Returns a comprehensive report with:
+    - folder_stats:  per-folder zip counts (root + nested)
+    - term_buckets:  "MOVIES August Term 2024"-style bucket folders
+    - fuzzy_dupes:   pairs of folder names that look like typo duplicates
+    - empty_folders: folders (and sub-folders) containing zero zips
+    - cross_category: folder names appearing in >1 category path
+
+    cross_category_dirs: {"Movies": "/mnt/movies", "VG": "/mnt/vg", ...}
+    """
+    if not os.path.isdir(base_dir):
+        return {"error": f"Directory not found: {base_dir}"}
+
+    # ── 1. Deep folder scan ───────────────────────────────────────────────────
+    _TERM_BUCKET = re.compile(
+        r'\b(term|january|february|march|april|may|june|july|august|september|october|november|december)\b',
+        re.IGNORECASE,
+    )
+
+    folder_stats = []
+    term_buckets = []
+    empty_folders = []
+
+    root_entries = sorted(os.listdir(base_dir))
+    for entry in root_entries:
+        full = os.path.join(base_dir, entry)
+        if not os.path.isdir(full):
+            continue
+
+        try:
+            sub_entries = os.listdir(full)
+        except PermissionError:
+            continue
+
+        root_zips = [f for f in sub_entries if f.lower().endswith('.zip')]
+        subfolders = [f for f in sub_entries if os.path.isdir(os.path.join(full, f))]
+
+        # Count nested zips
+        nested_zips: list[str] = []
+        for sf in subfolders:
+            sf_full = os.path.join(full, sf)
+            try:
+                sf_items = os.listdir(sf_full)
+                sf_zips = [z for z in sf_items if z.lower().endswith('.zip')]
+                nested_zips.extend(sf_zips)
+            except PermissionError:
+                pass
+
+        total_zips = len(root_zips) + len(nested_zips)
+
+        stat = {
+            "name": entry,
+            "path": full,
+            "root_zips": len(root_zips),
+            "nested_zips": len(nested_zips),
+            "subfolder_count": len(subfolders),
+            "total_zips": total_zips,
+        }
+        folder_stats.append(stat)
+
+        # Empty folder detection (no zips at any level)
+        if total_zips == 0:
+            empty_folders.append({"name": entry, "path": full, "depth": 0})
+
+        # Check nested subfolders for empties too
+        for sf in subfolders:
+            sf_full = os.path.join(full, sf)
+            try:
+                sf_contents = os.listdir(sf_full)
+                sf_zips = [f for f in sf_contents if f.lower().endswith('.zip')]
+                if not sf_zips:
+                    empty_folders.append({"name": sf, "path": sf_full, "depth": 1, "parent": entry})
+            except PermissionError:
+                pass
+
+        # Term bucket detection: root-level folders with only loose zips and name
+        # matches month/term keywords (e.g. "MOVIES August Term 2024")
+        if _TERM_BUCKET.search(entry) and len(root_zips) > 0 and len(subfolders) == 0:
+            term_buckets.append({
+                "name": entry,
+                "path": full,
+                "zip_count": len(root_zips),
+                "zips": sorted(root_zips[:50]),  # cap at 50 for payload size
+            })
+
+    # ── 2. Fuzzy duplicate detection ─────────────────────────────────────────
+    folder_names = [s["name"] for s in folder_stats]
+    fuzzy_dupes = []
+    seen_pairs: set[frozenset] = set()
+
+    for i, name_a in enumerate(folder_names):
+        for name_b in folder_names[i + 1:]:
+            key = frozenset([name_a, name_b])
+            if key in seen_pairs:
+                continue
+            seen_pairs.add(key)
+            # Quick length filter: skip if lengths differ by more than 30%
+            la, lb = len(name_a), len(name_b)
+            if la and lb and (min(la, lb) / max(la, lb)) < 0.70:
+                continue
+            ratio = difflib.SequenceMatcher(None, name_a.lower(), name_b.lower()).ratio()
+            if 0.80 <= ratio < 1.0:
+                fuzzy_dupes.append({
+                    "folder_a": name_a,
+                    "folder_b": name_b,
+                    "similarity": round(ratio, 3),
+                    "path_a": os.path.join(base_dir, name_a),
+                    "path_b": os.path.join(base_dir, name_b),
+                })
+
+    fuzzy_dupes.sort(key=lambda x: x["similarity"], reverse=True)
+
+    # ── 3. Cross-category duplicate detection ─────────────────────────────────
+    cross_category = []
+    if cross_category_dirs:
+        # Gather folder names per category
+        cat_folders: dict[str, set[str]] = {}
+        for cat, path in cross_category_dirs.items():
+            if os.path.isdir(path):
+                try:
+                    cat_folders[cat] = {
+                        n.lower() for n in os.listdir(path)
+                        if os.path.isdir(os.path.join(path, n))
+                    }
+                except PermissionError:
+                    cat_folders[cat] = set()
+
+        # Find names that appear in >1 category (case-insensitive)
+        all_cats = list(cat_folders.keys())
+        for i, cat_a in enumerate(all_cats):
+            for cat_b in all_cats[i + 1:]:
+                overlap = cat_folders.get(cat_a, set()) & cat_folders.get(cat_b, set())
+                for name_lower in sorted(overlap):
+                    # Get the actual-cased names
+                    actual_a = next((n for n in os.listdir(cross_category_dirs[cat_a]) if n.lower() == name_lower), name_lower)
+                    actual_b = next((n for n in os.listdir(cross_category_dirs[cat_b]) if n.lower() == name_lower), name_lower)
+                    # Check if this pair already logged
+                    existing = next((x for x in cross_category if x["name_lower"] == name_lower), None)
+                    if existing:
+                        if cat_b not in [c["category"] for c in existing["occurrences"]]:
+                            existing["occurrences"].append({"category": cat_b, "name": actual_b, "path": os.path.join(cross_category_dirs[cat_b], actual_b)})
+                    else:
+                        cross_category.append({
+                            "name_lower": name_lower,
+                            "occurrences": [
+                                {"category": cat_a, "name": actual_a, "path": os.path.join(cross_category_dirs[cat_a], actual_a)},
+                                {"category": cat_b, "name": actual_b, "path": os.path.join(cross_category_dirs[cat_b], actual_b)},
+                            ],
+                        })
+
+    return {
+        "base_dir": base_dir,
+        "folder_count": len(folder_stats),
+        "folder_stats": folder_stats,
+        "term_buckets": term_buckets,
+        "fuzzy_dupes": fuzzy_dupes,
+        "empty_folders": empty_folders,
+        "cross_category": cross_category,
+        "summary": {
+            "folders": len(folder_stats),
+            "term_buckets": len(term_buckets),
+            "fuzzy_dupes": len(fuzzy_dupes),
+            "empty_folders": len(empty_folders),
+            "cross_category": len(cross_category),
+        },
+    }
+
+
+def redistribute_term_bucket(
+    bucket_path: str,
+    base_dir: str,
+    dry_run: bool = True,
+) -> dict:
+    """
+    Redistribute zips from a term bucket folder into their canonical model folders
+    within base_dir (same logic as build_organization_plan).
+
+    dry_run=True: return the plan without moving anything.
+    dry_run=False: move files.
+    """
+    if not os.path.isdir(bucket_path):
+        return {"error": f"Bucket not found: {bucket_path}"}
+
+    zips = [f for f in os.listdir(bucket_path) if f.lower().endswith('.zip')]
+    moves = []
+    skipped = []
+    errors = []
+
+    for fname in sorted(zips):
+        stem = fname[:-4]
+        folder_name = _canonical_folder(stem)
+        dest_dir = os.path.join(base_dir, folder_name)
+        dest_path = os.path.join(dest_dir, fname)
+        src_path = os.path.join(bucket_path, fname)
+
+        if os.path.isfile(dest_path):
+            skipped.append({"file": fname, "reason": "already exists at destination"})
+            continue
+
+        if not dry_run:
+            try:
+                os.makedirs(dest_dir, exist_ok=True)
+                shutil.move(src_path, dest_path)
+                moves.append({"file": fname, "dest_folder": folder_name, "dest_path": dest_path})
+            except Exception as e:
+                errors.append({"file": fname, "error": str(e)})
+        else:
+            moves.append({"file": fname, "dest_folder": folder_name, "dest_path": dest_path})
+
+    # Remove the bucket folder if it's now empty (non-dry-run only)
+    bucket_removed = False
+    if not dry_run and not errors:
+        remaining = [f for f in os.listdir(bucket_path) if not f.startswith('.')]
+        if not remaining:
+            try:
+                os.rmdir(bucket_path)
+                bucket_removed = True
+            except Exception:
+                pass
+
+    return {
+        "dry_run": dry_run,
+        "bucket_path": bucket_path,
+        "moves": moves,
+        "skipped": skipped,
+        "errors": errors,
+        "bucket_removed": bucket_removed,
+        "summary": {
+            "to_move": len(moves),
+            "skipped": len(skipped),
+            "errors": len(errors),
+        },
+    }
+
+
+def delete_empty_folders(folder_paths: list[str], dry_run: bool = True) -> dict:
+    """
+    Delete a list of folder paths that are expected to be empty (no zips).
+    Skips any folder that still has files/subdirs.
+    """
+    deleted = []
+    skipped = []
+    errors = []
+
+    for path in folder_paths:
+        if not os.path.isdir(path):
+            skipped.append({"path": path, "reason": "not found"})
+            continue
+
+        # Double-check it's really empty of zips
+        all_files = []
+        for root, dirs, files in os.walk(path):
+            all_files.extend(files)
+
+        if any(f.lower().endswith('.zip') for f in all_files):
+            skipped.append({"path": path, "reason": "contains zip files — not deleting"})
+            continue
+
+        if dry_run:
+            deleted.append({"path": path, "name": os.path.basename(path)})
+        else:
+            try:
+                shutil.rmtree(path)
+                deleted.append({"path": path, "name": os.path.basename(path)})
+            except Exception as e:
+                errors.append({"path": path, "error": str(e)})
+
+    return {
+        "dry_run": dry_run,
+        "deleted": deleted,
+        "skipped": skipped,
+        "errors": errors,
+        "summary": {"deleted": len(deleted), "skipped": len(skipped), "errors": len(errors)},
+    }
+
+
 def execute_organization_plan(plan: dict, dry_run: bool = False) -> dict:
     """
     Execute a plan returned by build_organization_plan.

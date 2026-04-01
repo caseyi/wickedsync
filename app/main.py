@@ -34,6 +34,9 @@ from app.claude_agent import ClaudeAgent, _discover_job
 from app.folder_organizer import (
     build_organization_plan,
     execute_organization_plan,
+    scan_library_health,
+    redistribute_term_bucket,
+    delete_empty_folders,
     FolderMatcher,
     save_preference,
     load_preferences,
@@ -623,3 +626,182 @@ async def organize_execute(category: str, req: OrganizeConfirmRequest):
     plan = build_organization_plan(base_path, franchise_map=franchise_map)
     result = execute_organization_plan(plan, dry_run=not req.confirmed)
     return result
+
+
+# ── Library Health ────────────────────────────────────────────────────────────
+
+class HealthRedistributeRequest(BaseModel):
+    bucket_path: str
+    base_dir: str
+    confirmed: bool = False
+
+
+class HealthDeleteEmptyRequest(BaseModel):
+    folder_paths: list[str]
+    confirmed: bool = False
+
+
+class HealthRenameRequest(BaseModel):
+    folder_names: list[str] | None = None  # None → use all folders in category
+    category: str | None = None
+    custom_path: str | None = None
+
+
+class HealthRenameApplyRequest(BaseModel):
+    base_dir: str
+    renames: list[dict]   # [{"original": str, "suggested": str}]
+    confirmed: bool = False
+
+
+@app.get("/api/organize/health/{category}")
+async def library_health(category: str, custom_path: str | None = None):
+    """
+    Run a full health scan on a category (or custom path).
+    Returns: term buckets, fuzzy duplicates, empty folders, cross-category dupes.
+    """
+    base_path = _resolve_org_path(category, custom_path)
+
+    # Build cross-category dirs for cross-cat dupe detection
+    cross_dirs = {k: v for k, v in settings.term_to_path.items() if os.path.isdir(v)}
+
+    import asyncio as _asyncio
+    loop = _asyncio.get_event_loop()
+    report = await loop.run_in_executor(
+        None, lambda: scan_library_health(base_path, cross_category_dirs=cross_dirs)
+    )
+    report["category"] = category
+    return report
+
+
+@app.post("/api/organize/health/redistribute")
+async def health_redistribute(req: HealthRedistributeRequest):
+    """
+    Move zips from a term bucket folder into their canonical model folders.
+    Set confirmed=True to actually move files (default is dry-run preview).
+    """
+    import asyncio as _asyncio
+    loop = _asyncio.get_event_loop()
+    result = await loop.run_in_executor(
+        None,
+        lambda: redistribute_term_bucket(req.bucket_path, req.base_dir, dry_run=not req.confirmed),
+    )
+    return result
+
+
+@app.post("/api/organize/health/delete-empty")
+async def health_delete_empty(req: HealthDeleteEmptyRequest):
+    """
+    Delete a list of empty folders.
+    Set confirmed=True to actually delete (default is dry-run preview).
+    """
+    import asyncio as _asyncio
+    loop = _asyncio.get_event_loop()
+    result = await loop.run_in_executor(
+        None,
+        lambda: delete_empty_folders(req.folder_paths, dry_run=not req.confirmed),
+    )
+    return result
+
+
+@app.post("/api/organize/health/suggest-renames")
+async def health_suggest_renames(req: HealthRenameRequest):
+    """
+    Ask Claude to suggest normalized folder names — fixing typos, capitalization,
+    punctuation inconsistencies. Returns [{original, suggested, reason}] list
+    WITHOUT making any file system changes.
+    """
+    if not settings.anthropic_api_key:
+        raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY not configured")
+
+    # Collect folder names
+    if req.folder_names:
+        names = req.folder_names
+    else:
+        base_path = _resolve_org_path(req.category or "Movies", req.custom_path)
+        if not os.path.isdir(base_path):
+            raise HTTPException(status_code=404, detail="Path not found")
+        names = sorted([
+            n for n in os.listdir(base_path)
+            if os.path.isdir(os.path.join(base_path, n))
+        ])
+
+    if not names:
+        return {"suggestions": [], "message": "No folders found."}
+
+    prompt = (
+        "You are a 3D printing STL library organiser. Below is a list of folder names "
+        "from a library. Your job is to identify folders with naming issues such as:\n"
+        "- Obvious typos (e.g. 'Barlog' instead of 'Balrog', 'Steet Fighter' instead of 'Street Fighter')\n"
+        "- Case inconsistencies (e.g. 'WICKED - Batman' vs 'Wicked - Batman')\n"
+        "- Punctuation errors or extra spaces\n"
+        "- Misspellings that are clearly wrong\n\n"
+        "Return ONLY valid JSON: an array of objects with keys "
+        '"original" (exact input), "suggested" (corrected name), "reason" (brief explanation). '
+        "Only include folders that need a change. If a folder name is correct, omit it. "
+        "Output only the JSON array, no explanation.\n\n"
+        "Folder names:\n" + "\n".join(f"- {n}" for n in names)
+    )
+
+    import json as _json
+
+    client = _anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    message = client.messages.create(
+        model=settings.claude_model,
+        max_tokens=4096,
+        messages=[{"role": "user", "content": prompt}],
+    )
+
+    raw = message.content[0].text.strip()
+    if raw.startswith("```"):
+        raw = "\n".join(raw.split("\n")[1:]).rstrip("`").strip()
+
+    try:
+        suggestions = _json.loads(raw)
+    except Exception:
+        raise HTTPException(status_code=500, detail=f"Claude returned unparseable JSON: {raw[:300]}")
+
+    return {"suggestions": suggestions, "folder_count": len(names), "suggestion_count": len(suggestions)}
+
+
+@app.post("/api/organize/health/apply-renames")
+async def health_apply_renames(req: HealthRenameApplyRequest):
+    """
+    Apply folder renames on disk.
+    Set confirmed=True to actually rename (default is dry-run preview showing what would change).
+    """
+    results = []
+    errors = []
+
+    for rename in req.renames:
+        original = rename.get("original", "").strip()
+        suggested = rename.get("suggested", "").strip()
+        if not original or not suggested or original == suggested:
+            continue
+
+        src = os.path.join(req.base_dir, original)
+        dest = os.path.join(req.base_dir, suggested)
+
+        if not os.path.isdir(src):
+            errors.append({"original": original, "error": "Source folder not found"})
+            continue
+
+        if os.path.exists(dest):
+            errors.append({"original": original, "error": f"Destination already exists: {suggested}"})
+            continue
+
+        if req.confirmed:
+            try:
+                import shutil as _shutil
+                _shutil.move(src, dest)
+                results.append({"original": original, "suggested": suggested, "status": "renamed"})
+            except Exception as e:
+                errors.append({"original": original, "error": str(e)})
+        else:
+            results.append({"original": original, "suggested": suggested, "status": "preview"})
+
+    return {
+        "dry_run": not req.confirmed,
+        "results": results,
+        "errors": errors,
+        "summary": {"renamed": len(results), "errors": len(errors)},
+    }

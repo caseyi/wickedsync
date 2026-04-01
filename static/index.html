@@ -124,6 +124,26 @@
   .empty { text-align: center; color: var(--muted); padding: 40px; }
   .loading { color: var(--muted); font-style: italic; }
   .error-text { color: var(--red); font-size: 12px; }
+
+  /* Health tab */
+  .health-section { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 16px; overflow: hidden; }
+  .health-section-header { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--border); font-weight: 700; font-size: 14px; cursor: pointer; user-select: none; }
+  .health-section-header .count-badge { margin-left: auto; font-size: 12px; padding: 2px 8px; border-radius: 99px; }
+  .health-section-body { padding: 12px 16px; }
+  .health-item { display: flex; align-items: center; gap: 10px; padding: 7px 0; border-bottom: 1px solid rgba(255,255,255,0.04); font-size: 13px; }
+  .health-item:last-child { border-bottom: none; }
+  .health-item .item-name { flex: 1; font-family: monospace; font-size: 12px; }
+  .health-item .item-meta { font-size: 11px; color: var(--muted); white-space: nowrap; }
+  .dupe-pair { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,0.04); font-size: 12px; font-family: monospace; }
+  .dupe-pair:last-child { border-bottom: none; }
+  .dupe-sim { font-size: 11px; padding: 2px 6px; border-radius: 4px; background: #3b2a0a; color: var(--yellow); white-space: nowrap; font-family: sans-serif; }
+  .rename-row input { width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; color: var(--text); padding: 4px 8px; font-size: 12px; font-family: monospace; }
+  .cross-cat-item { padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,0.04); font-size: 12px; }
+  .cross-cat-item:last-child { border-bottom: none; }
+  .cat-chip { display: inline-block; padding: 2px 7px; border-radius: 99px; font-size: 11px; margin-right: 4px; }
+  .cat-chip.movies { background: #1e3a5f; color: #60a5fa; }
+  .cat-chip.vg { background: #14532d; color: var(--green); }
+  .cat-chip.marvel { background: #450a0a; color: var(--red); }
 </style>
 </head>
 <body>
@@ -184,6 +204,7 @@
         <div class="tab" onclick="showTab('library')">Library</div>
         <div class="tab" onclick="showTab('organize')">Organize</div>
         <div class="tab" onclick="showTab('tags')">Franchise Tags</div>
+        <div class="tab" onclick="showTab('health')">🏥 Health</div>
       </div>
 
       <!-- Downloads tab -->
@@ -369,6 +390,122 @@
           💡 Once tags are set, the Organize tab will nest files:
           <code style="background:var(--bg);padding:2px 6px;border-radius:3px">Movies / Lord of the Rings / Gandalf Wizard Pose /</code>
         </div>
+      </div>
+
+      <!-- ── Library Health tab ────────────────────────────────────────────── -->
+      <div class="tab-panel" id="tab-health">
+
+        <!-- Toolbar -->
+        <div style="display:flex;gap:10px;align-items:center;margin-bottom:16px;flex-wrap:wrap">
+          <select id="health-category" style="width:160px">
+            <option value="Movies">🎬 Movies</option>
+            <option value="VG">🎮 Video Games</option>
+            <option value="Marvel">🦸 Marvel</option>
+          </select>
+          <button class="btn btn-primary" onclick="runHealthScan()" id="health-scan-btn" style="width:auto">🔬 Scan Library</button>
+          <span id="health-scan-status" style="color:var(--muted);font-size:12px"></span>
+        </div>
+
+        <!-- Summary bar -->
+        <div id="health-summary" style="display:none;gap:20px;background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:12px 16px;margin-bottom:16px;font-size:13px;flex-wrap:wrap"></div>
+
+        <!-- ── 1. Term Buckets ─────────────────────────────────────────────── -->
+        <div class="health-section" id="health-buckets-section" style="display:none">
+          <div class="health-section-header" onclick="toggleSection('health-buckets-body')">
+            <span>📦 Term Bucket Folders</span>
+            <span style="font-size:12px;color:var(--muted);font-weight:400">Folders like "MOVIES August Term 2024" that bundle multiple models</span>
+            <span class="count-badge" id="health-buckets-count" style="background:#3b2a0a;color:var(--yellow)">0</span>
+          </div>
+          <div class="health-section-body" id="health-buckets-body">
+            <div id="health-buckets-list"></div>
+          </div>
+        </div>
+
+        <!-- ── 2. Fuzzy Duplicates ─────────────────────────────────────────── -->
+        <div class="health-section" id="health-dupes-section" style="display:none">
+          <div class="health-section-header" onclick="toggleSection('health-dupes-body')">
+            <span>🔁 Likely Duplicate Folders</span>
+            <span style="font-size:12px;color:var(--muted);font-weight:400">Similar folder names that may be typos</span>
+            <span class="count-badge" id="health-dupes-count" style="background:#3b2a0a;color:var(--yellow)">0</span>
+          </div>
+          <div class="health-section-body" id="health-dupes-body">
+            <div id="health-dupes-list"></div>
+          </div>
+        </div>
+
+        <!-- ── 3. Claude Rename Suggestions ──────────────────────────────────── -->
+        <div class="health-section" id="health-renames-section" style="display:none">
+          <div class="health-section-header" onclick="toggleSection('health-renames-body')">
+            <span>✏️ Folder Name Fixes</span>
+            <span style="font-size:12px;color:var(--muted);font-weight:400">Claude-suggested typo + case normalization</span>
+            <span class="count-badge" id="health-renames-count" style="background:var(--border);color:var(--muted)">not run</span>
+          </div>
+          <div class="health-section-body" id="health-renames-body">
+            <div style="display:flex;gap:10px;margin-bottom:14px;align-items:center">
+              <button class="btn" style="background:#4c1d95;color:#ddd8fe;width:auto" onclick="suggestRenames()" id="suggest-renames-btn">
+                ✨ Ask Claude for suggestions
+              </button>
+              <span style="font-size:12px;color:var(--muted)">Sends all folder names to Claude to find typos and case inconsistencies.</span>
+            </div>
+            <div id="health-renames-preview" style="display:none">
+              <div style="max-height:340px;overflow-y:auto;margin-bottom:12px">
+                <table style="width:100%;border-collapse:collapse;font-size:13px">
+                  <thead>
+                    <tr style="position:sticky;top:0;background:var(--panel)">
+                      <th style="text-align:left;padding:7px 10px;border-bottom:1px solid var(--border);font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;width:36%">Current Name</th>
+                      <th style="text-align:left;padding:7px 10px;border-bottom:1px solid var(--border);font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;width:38%">Suggested Name</th>
+                      <th style="text-align:left;padding:7px 10px;border-bottom:1px solid var(--border);font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px">Reason</th>
+                      <th style="width:32px;padding:7px 10px;border-bottom:1px solid var(--border)"></th>
+                    </tr>
+                  </thead>
+                  <tbody id="health-renames-tbody"></tbody>
+                </table>
+              </div>
+              <div style="display:flex;gap:10px;align-items:center">
+                <button class="btn btn-primary" onclick="applyRenames(false)" id="apply-renames-preview-btn" style="width:auto">👁 Preview Renames</button>
+                <button class="btn" style="background:#7f1d1d;color:#fca5a5;width:auto" onclick="applyRenames(true)" id="apply-renames-btn">✅ Apply Selected Renames</button>
+                <span id="renames-result" style="font-size:12px;color:var(--green)"></span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── 4. Empty Folders ───────────────────────────────────────────────── -->
+        <div class="health-section" id="health-empty-section" style="display:none">
+          <div class="health-section-header" onclick="toggleSection('health-empty-body')">
+            <span>🗑 Empty Folders</span>
+            <span style="font-size:12px;color:var(--muted);font-weight:400">Folders containing no zip files at any depth</span>
+            <span class="count-badge" id="health-empty-count" style="background:var(--border);color:var(--muted)">0</span>
+          </div>
+          <div class="health-section-body" id="health-empty-body">
+            <div style="display:flex;gap:10px;margin-bottom:12px;align-items:center">
+              <label style="font-size:12px;color:var(--muted)">
+                <input type="checkbox" id="health-empty-select-all" onchange="toggleEmptySelectAll(this.checked)" style="margin-right:4px">
+                Select all
+              </label>
+              <button class="btn btn-sm btn-danger" onclick="deleteSelectedEmpty()" style="margin-left:8px">🗑 Delete Selected</button>
+              <span id="health-empty-result" style="font-size:12px;color:var(--green)"></span>
+            </div>
+            <div id="health-empty-list" style="max-height:300px;overflow-y:auto"></div>
+          </div>
+        </div>
+
+        <!-- ── 5. Cross-Category Duplicates ──────────────────────────────────── -->
+        <div class="health-section" id="health-cross-section" style="display:none">
+          <div class="health-section-header" onclick="toggleSection('health-cross-body')">
+            <span>🔀 Cross-Category Duplicates</span>
+            <span style="font-size:12px;color:var(--muted);font-weight:400">Folder names appearing in more than one category</span>
+            <span class="count-badge" id="health-cross-count" style="background:#3b2a0a;color:var(--yellow)">0</span>
+          </div>
+          <div class="health-section-body" id="health-cross-body">
+            <div id="health-cross-list"></div>
+          </div>
+        </div>
+
+        <div id="health-empty-state" style="text-align:center;color:var(--muted);padding:60px;display:block">
+          Select a category and click <b>Scan Library</b> to run the health check.
+        </div>
+
       </div>
     </div>
   </main>
@@ -866,6 +1003,284 @@ async function saveSuggestions() {
   document.getElementById('tags-suggest-panel').style.display = 'none';
   document.getElementById('tags-hint').textContent = `Saved ${res.saved} franchise tags from Claude's suggestions.`;
   await loadTags();
+}
+
+// ── Library Health ────────────────────────────────────────────────────────────
+let _healthReport = null;
+let _renameBasePath = '';
+let _renameSuggestions = [];
+
+function toggleSection(bodyId) {
+  const el = document.getElementById(bodyId);
+  if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
+}
+
+async function runHealthScan() {
+  const cat = document.getElementById('health-category').value;
+  const btn = document.getElementById('health-scan-btn');
+  const status = document.getElementById('health-scan-status');
+  btn.disabled = true;
+  btn.textContent = '⏳ Scanning…';
+  status.textContent = '';
+  document.getElementById('health-empty-state').style.display = 'none';
+
+  // Hide all sections while loading
+  ['buckets','dupes','renames','empty','cross'].forEach(k => {
+    document.getElementById(`health-${k}-section`).style.display = 'none';
+  });
+  document.getElementById('health-summary').style.display = 'none';
+
+  try {
+    const report = await api('GET', `/api/organize/health/${cat}`);
+    _healthReport = report;
+    _renameBasePath = report.base_dir;
+    renderHealthReport(report);
+    status.textContent = `Scan complete · ${report.folder_count} folders checked`;
+  } catch (e) {
+    status.textContent = `Error: ${e.message}`;
+    status.style.color = 'var(--red)';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🔬 Scan Library';
+  }
+}
+
+function renderHealthReport(report) {
+  const s = report.summary;
+
+  // Summary bar
+  const summaryEl = document.getElementById('health-summary');
+  summaryEl.style.display = 'flex';
+  summaryEl.innerHTML = [
+    { num: s.folders, label: 'Folders', color: 'var(--text)' },
+    { num: s.term_buckets, label: 'Term Buckets', color: s.term_buckets > 0 ? 'var(--yellow)' : 'var(--muted)' },
+    { num: s.fuzzy_dupes, label: 'Fuzzy Dupes', color: s.fuzzy_dupes > 0 ? 'var(--yellow)' : 'var(--muted)' },
+    { num: s.empty_folders, label: 'Empty Folders', color: s.empty_folders > 0 ? 'var(--muted)' : 'var(--muted)' },
+    { num: s.cross_category, label: 'Cross-Cat Dupes', color: s.cross_category > 0 ? 'var(--yellow)' : 'var(--muted)' },
+  ].map(x => `
+    <div class="stat-item">
+      <span class="stat-num" style="color:${x.color}">${x.num}</span>
+      <span class="stat-label">${x.label}</span>
+    </div>
+  `).join('');
+
+  // ── Term Buckets ──────────────────────────────────────────────────────────
+  const bucketsSection = document.getElementById('health-buckets-section');
+  document.getElementById('health-buckets-count').textContent = s.term_buckets;
+  if (report.term_buckets.length > 0) {
+    bucketsSection.style.display = 'block';
+    document.getElementById('health-buckets-list').innerHTML = report.term_buckets.map(b => `
+      <div class="health-item" style="flex-wrap:wrap;gap:8px;padding:10px 0">
+        <div style="flex:0 0 100%">
+          <span style="font-weight:700;font-family:monospace;font-size:13px">📦 ${b.name}</span>
+          <span style="margin-left:10px;font-size:11px;color:var(--muted)">${b.zip_count} zips</span>
+        </div>
+        <div style="font-size:11px;color:var(--muted);font-family:monospace;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+          ${b.zips.slice(0,5).join(', ')}${b.zips.length > 5 ? ` …+${b.zips.length - 5} more` : ''}
+        </div>
+        <div style="display:flex;gap:8px;flex:0 0 auto">
+          <button class="btn btn-sm btn-secondary" onclick='previewRedistribute(${JSON.stringify(b.path)}, ${JSON.stringify(report.base_dir)})'>
+            👁 Preview
+          </button>
+          <button class="btn btn-sm" style="background:#14532d;color:var(--green)" onclick='confirmRedistribute(${JSON.stringify(b.path)}, ${JSON.stringify(report.base_dir)}, ${JSON.stringify(b.name)})'>
+            ▶ Redistribute
+          </button>
+        </div>
+      </div>
+    `).join('<hr style="border:none;border-top:1px solid var(--border)">');
+  } else {
+    bucketsSection.style.display = 'none';
+  }
+
+  // ── Fuzzy Dupes ───────────────────────────────────────────────────────────
+  const dupesSection = document.getElementById('health-dupes-section');
+  document.getElementById('health-dupes-count').textContent = s.fuzzy_dupes;
+  if (report.fuzzy_dupes.length > 0) {
+    dupesSection.style.display = 'block';
+    document.getElementById('health-dupes-list').innerHTML = report.fuzzy_dupes.map(d => `
+      <div class="dupe-pair">
+        <span class="dupe-sim">${Math.round(d.similarity * 100)}% match</span>
+        <span style="color:var(--red)">📁 ${d.folder_a}</span>
+        <span style="color:var(--muted)">↔</span>
+        <span style="color:var(--yellow)">📁 ${d.folder_b}</span>
+      </div>
+    `).join('');
+  } else {
+    dupesSection.style.display = 'none';
+  }
+
+  // ── Renames section (Claude — always show after scan) ─────────────────────
+  const renamesSection = document.getElementById('health-renames-section');
+  renamesSection.style.display = 'block';
+  document.getElementById('health-renames-count').textContent = 'not run';
+  document.getElementById('health-renames-preview').style.display = 'none';
+
+  // ── Empty Folders ─────────────────────────────────────────────────────────
+  const emptySection = document.getElementById('health-empty-section');
+  document.getElementById('health-empty-count').textContent = s.empty_folders;
+  if (report.empty_folders.length > 0) {
+    emptySection.style.display = 'block';
+    document.getElementById('health-empty-list').innerHTML = report.empty_folders.map((f, i) => `
+      <div class="health-item">
+        <input type="checkbox" class="empty-folder-cb" data-path="${f.path}" id="emf-${i}" checked>
+        <label for="emf-${i}" class="item-name" style="cursor:pointer">
+          ${'&nbsp;&nbsp;&nbsp;&nbsp;'.repeat(f.depth || 0)}${f.depth ? '↳ ' : ''}${f.name}
+        </label>
+        <span class="item-meta">${f.parent ? `in ${f.parent}` : 'root level'}</span>
+      </div>
+    `).join('');
+  } else {
+    emptySection.style.display = 'none';
+  }
+
+  // ── Cross-Category ────────────────────────────────────────────────────────
+  const crossSection = document.getElementById('health-cross-section');
+  document.getElementById('health-cross-count').textContent = s.cross_category;
+  if (report.cross_category.length > 0) {
+    crossSection.style.display = 'block';
+    const catClass = (cat) => cat.toLowerCase().replace(' ', '');
+    document.getElementById('health-cross-list').innerHTML = report.cross_category.map(x => `
+      <div class="cross-cat-item">
+        <span style="font-family:monospace;font-weight:600">${x.name_lower}</span>
+        &nbsp;appears in:&nbsp;
+        ${x.occurrences.map(o => `<span class="cat-chip ${catClass(o.category)}">${o.category}: ${o.name}</span>`).join('')}
+      </div>
+    `).join('');
+  } else {
+    crossSection.style.display = 'none';
+  }
+}
+
+// Term bucket redistribute
+async function previewRedistribute(bucketPath, baseDir) {
+  try {
+    const res = await api('POST', '/api/organize/health/redistribute', {
+      bucket_path: bucketPath, base_dir: baseDir, confirmed: false
+    });
+    const lines = res.moves.slice(0, 20).map(m => `• ${m.file} → ${m.dest_folder}/`).join('\n');
+    const skips = res.skipped.length ? `\n\nSkipped (already exist): ${res.skipped.length}` : '';
+    alert(`Preview: ${res.moves.length} files would move\n\n${lines}${res.moves.length > 20 ? '\n…and more' : ''}${skips}`);
+  } catch (e) {
+    alert(`Error: ${e.message}`);
+  }
+}
+
+async function confirmRedistribute(bucketPath, baseDir, bucketName) {
+  if (!confirm(`Redistribute all zips from "${bucketName}" into their model folders?\n\nThis moves the files — it cannot be undone easily.`)) return;
+  try {
+    const res = await api('POST', '/api/organize/health/redistribute', {
+      bucket_path: bucketPath, base_dir: baseDir, confirmed: true
+    });
+    alert(`Redistributed ${res.summary.to_move} files, skipped ${res.summary.skipped}.${res.bucket_removed ? ' Bucket folder removed.' : ''}`);
+    runHealthScan(); // re-scan
+  } catch (e) {
+    alert(`Error: ${e.message}`);
+  }
+}
+
+// Empty folder deletion
+function toggleEmptySelectAll(checked) {
+  document.querySelectorAll('.empty-folder-cb').forEach(cb => cb.checked = checked);
+}
+
+async function deleteSelectedEmpty() {
+  const selected = [...document.querySelectorAll('.empty-folder-cb:checked')].map(cb => cb.dataset.path);
+  if (!selected.length) { alert('Select at least one folder.'); return; }
+  if (!confirm(`Delete ${selected.length} empty folder${selected.length !== 1 ? 's' : ''}? This cannot be undone.`)) return;
+
+  try {
+    const res = await api('POST', '/api/organize/health/delete-empty', {
+      folder_paths: selected, confirmed: true
+    });
+    const resultEl = document.getElementById('health-empty-result');
+    resultEl.textContent = `Deleted ${res.summary.deleted} folder${res.summary.deleted !== 1 ? 's' : ''}.${res.summary.errors > 0 ? ` ${res.summary.errors} errors.` : ''}`;
+    runHealthScan(); // re-scan
+  } catch (e) {
+    document.getElementById('health-empty-result').textContent = `Error: ${e.message}`;
+  }
+}
+
+// Claude rename suggestions
+async function suggestRenames() {
+  if (!_healthReport) { alert('Run a scan first.'); return; }
+  const btn = document.getElementById('suggest-renames-btn');
+  btn.disabled = true;
+  btn.textContent = '⏳ Asking Claude…';
+  document.getElementById('health-renames-count').textContent = '…';
+
+  try {
+    const cat = document.getElementById('health-category').value;
+    const res = await api('POST', '/api/organize/health/suggest-renames', { category: cat });
+    _renameSuggestions = res.suggestions;
+    document.getElementById('health-renames-count').textContent = `${res.suggestion_count} suggestions`;
+
+    if (res.suggestions.length === 0) {
+      document.getElementById('health-renames-count').textContent = '✓ no issues';
+      return;
+    }
+
+    // Populate rename table
+    const tbody = document.getElementById('health-renames-tbody');
+    tbody.innerHTML = res.suggestions.map((s, i) => `
+      <tr data-idx="${i}">
+        <td style="padding:6px 10px;font-family:monospace;color:var(--red)">${s.original}</td>
+        <td style="padding:6px 10px" class="rename-row">
+          <input type="text" class="rename-suggested" value="${s.suggested}">
+        </td>
+        <td style="padding:6px 10px;color:var(--muted);font-size:11px">${s.reason}</td>
+        <td style="padding:4px 6px">
+          <input type="checkbox" class="rename-cb" data-original="${s.original.replace(/"/g,'&quot;')}" checked>
+        </td>
+      </tr>
+    `).join('');
+
+    document.getElementById('health-renames-preview').style.display = 'block';
+  } catch (e) {
+    document.getElementById('health-renames-count').textContent = 'error';
+    alert(`Error: ${e.message}`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '✨ Ask Claude for suggestions';
+  }
+}
+
+async function applyRenames(confirmed) {
+  const selected = [...document.querySelectorAll('.rename-cb:checked')];
+  if (!selected.length) { alert('Select at least one rename.'); return; }
+
+  const renames = selected.map(cb => {
+    const row = cb.closest('tr');
+    const original = cb.dataset.original;
+    const suggested = row.querySelector('.rename-suggested').value.trim();
+    return { original, suggested };
+  }).filter(r => r.original && r.suggested && r.original !== r.suggested);
+
+  if (!renames.length) { alert('Nothing to rename.'); return; }
+
+  if (confirmed && !confirm(`Rename ${renames.length} folder${renames.length !== 1 ? 's' : ''} on disk?\n\nThis cannot be undone.`)) return;
+
+  try {
+    const res = await api('POST', '/api/organize/health/apply-renames', {
+      base_dir: _renameBasePath,
+      renames,
+      confirmed,
+    });
+    const resultEl = document.getElementById('renames-result');
+    if (!confirmed) {
+      resultEl.textContent = `Preview: ${res.summary.renamed} rename${res.summary.renamed !== 1 ? 's' : ''} ready.`;
+      resultEl.style.color = 'var(--yellow)';
+    } else {
+      resultEl.textContent = `✅ Renamed ${res.summary.renamed} folder${res.summary.renamed !== 1 ? 's' : ''}.${res.summary.errors > 0 ? ` ${res.summary.errors} errors.` : ''}`;
+      resultEl.style.color = 'var(--green)';
+      runHealthScan(); // re-scan
+    }
+    if (res.errors.length) {
+      resultEl.textContent += ' Errors: ' + res.errors.map(e => e.original + ': ' + e.error).join('; ');
+      resultEl.style.color = 'var(--red)';
+    }
+  } catch (e) {
+    document.getElementById('renames-result').textContent = `Error: ${e.message}`;
+  }
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────
