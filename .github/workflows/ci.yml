@@ -5,6 +5,7 @@ on:
     branches: [main, develop]
   pull_request:
     branches: [main]
+  workflow_call:  # allows publish.yml to call this as a reusable workflow
 
 jobs:
   test:
