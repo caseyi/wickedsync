@@ -150,6 +150,7 @@
 <div id="app">
   <header>
     <h1>Wicked<span>Sync</span></h1>
+    <span id="codename-badge" style="font-size:11px;color:var(--muted);border:1px solid var(--border);border-radius:99px;padding:1px 8px;font-style:italic">…</span>
     <span id="worker-pill" class="status-pill stopped">● stopped</span>
     <button class="btn btn-secondary btn-sm" id="worker-toggle">Start</button>
     <div class="stat">
@@ -213,6 +214,7 @@
         <div class="tab" onclick="showTab('organize')">Organize</div>
         <div class="tab" onclick="showTab('tags')">Franchise Tags</div>
         <div class="tab" onclick="showTab('health')">🏥 Health</div>
+        <div class="tab" onclick="showTab('annotate')">🤖 Annotate</div>
       </div>
 
       <!-- Downloads tab -->
@@ -465,7 +467,7 @@
               <button class="btn" style="background:#4c1d95;color:#ddd8fe;width:auto" onclick="suggestRenames()" id="suggest-renames-btn">
                 ✨ Ask Claude for suggestions
               </button>
-              <span style="font-size:12px;color:var(--muted)">Sends all folder names to Claude to find typos and case inconsistencies.</span>
+              <span style="font-size:12px;color:var(--muted)">Uses API credits (Haiku). For zero-cost renaming, use the 🤖 Annotate tab instead.</span>
             </div>
             <div id="health-renames-preview" style="display:none">
               <div style="max-height:340px;overflow-y:auto;margin-bottom:12px">
@@ -527,6 +529,113 @@
         </div>
 
       </div>
+
+      <!-- ── Annotate tab ──────────────────────────────────────────────────── -->
+      <div class="tab-panel" id="tab-annotate">
+        <div style="padding:20px;max-width:960px">
+
+          <!-- Callout -->
+          <div style="background:#0d2a1a;border:1px solid #166534;border-radius:8px;padding:14px 18px;margin-bottom:18px">
+            <div style="font-weight:700;color:#4ade80;margin-bottom:4px">🤖 Zero API Credits — Claude runs in your chat, not here</div>
+            <div style="font-size:12px;color:#86efac;line-height:1.6">
+              Export your library tree → paste into a Claude chat window → Claude annotates with
+              <code style="background:#052e16;padding:1px 5px;border-radius:3px">FRANCHISE:</code>
+              <code style="background:#052e16;padding:1px 5px;border-radius:3px">RENAME:</code>
+              <code style="background:#052e16;padding:1px 5px;border-radius:3px">MERGE:</code>
+              <code style="background:#052e16;padding:1px 5px;border-radius:3px">TAG:</code>
+              directives → paste back here → preview &amp; apply.
+            </div>
+          </div>
+
+          <!-- Step 1: Export -->
+          <div class="health-section" style="margin-bottom:0">
+            <div class="health-section-header" style="cursor:default">
+              <span>📤 Step 1 — Export Library Snapshot</span>
+            </div>
+            <div style="padding:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+              <select id="annotate-category" style="width:160px">
+                <option value="all">All Categories</option>
+                <option value="Movies">Movies</option>
+                <option value="VG">VG</option>
+                <option value="Marvel">Marvel</option>
+              </select>
+              <button class="btn btn-primary" onclick="exportSnapshot()" id="export-snapshot-btn" style="width:auto">
+                📥 Export Snapshot
+              </button>
+              <button class="btn" id="copy-snapshot-btn" onclick="copySnapshot()"
+                style="display:none;background:var(--border);color:var(--text)">
+                📋 Copy
+              </button>
+              <button class="btn" id="download-snapshot-btn" onclick="downloadSnapshot()"
+                style="display:none;background:var(--border);color:var(--text)">
+                ⬇ Download .txt
+              </button>
+              <span id="export-status" style="font-size:12px;color:var(--muted)"></span>
+            </div>
+            <div id="snapshot-preview" style="display:none;padding:0 14px 14px">
+              <textarea id="snapshot-content" style="height:180px;font-family:monospace;font-size:11px;color:#86efac;background:#061a0e;border-color:#166534" readonly></textarea>
+              <div style="margin-top:6px;font-size:12px;color:var(--muted)">
+                Copy this text and paste it into a <b style="color:var(--accent2)">Claude chat</b>.
+                Ask Claude to annotate it with FRANCHISE/RENAME/MERGE/TAG directives, then come back to Step 2.
+              </div>
+            </div>
+          </div>
+
+          <!-- Step 2: Paste -->
+          <div class="health-section" style="margin-top:12px;margin-bottom:0">
+            <div class="health-section-header" style="cursor:default">
+              <span>📋 Step 2 — Paste Claude's Annotated Response</span>
+            </div>
+            <div style="padding:14px">
+              <label style="display:inline-flex;align-items:center;gap:8px;cursor:pointer;
+                            font-size:13px;color:var(--accent2);margin-bottom:10px;
+                            border:1px dashed var(--accent2);border-radius:6px;padding:6px 12px">
+                📎 Upload annotated .txt file
+                <input type="file" id="annotate-file-input" accept=".txt,.md"
+                       style="display:none" onchange="onAnnotateFileChosen(this)">
+              </label>
+              <textarea id="annotate-paste-area"
+                placeholder="Paste Claude's annotated response here…
+
+Supported directives (one per line):
+  FRANCHISE: Folder Name → Franchise Label
+  RENAME: Old Folder Name → New Folder Name
+  MERGE: Folder A + Folder B
+  TAG: Folder Name | term=Movies"
+                style="height:220px;font-family:monospace;font-size:12px"></textarea>
+              <div style="display:flex;gap:10px;margin-top:10px;align-items:center">
+                <button class="btn btn-primary" onclick="parseAnnotations()" style="width:auto">
+                  🔍 Parse Directives
+                </button>
+                <span id="parse-status" style="font-size:12px;color:var(--muted)"></span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Step 3: Preview + Apply -->
+          <div id="annotate-preview-section" style="display:none;margin-top:12px">
+            <div class="health-section" style="margin-bottom:0">
+              <div class="health-section-header" style="cursor:default">
+                <span>👁 Step 3 — Preview &amp; Apply</span>
+                <span class="count-badge" id="annotate-directive-count"
+                      style="background:var(--border);color:var(--muted)">0</span>
+              </div>
+              <div style="padding:14px">
+                <div id="annotate-preview-wrap"></div>
+                <div style="display:flex;gap:10px;margin-top:14px;align-items:center">
+                  <button class="btn btn-primary" onclick="applyAnnotations()"
+                          id="apply-annotations-btn" style="width:auto">
+                    ✅ Apply Changes
+                  </button>
+                  <span id="annotate-apply-result" style="font-size:12px"></span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
     </div>
   </main>
 </div>
@@ -564,6 +673,12 @@ async function refreshStatus() {
     document.getElementById('stat-total').textContent = s.total_files;
     document.getElementById('stat-gb').textContent = s.total_gb;
     document.getElementById('stat-active').textContent = s.active_files;
+
+    // Show codename
+    if (s.codename) {
+      const cn = document.getElementById('codename-badge');
+      if (cn) cn.textContent = s.codename;
+    }
 
     const pill = document.getElementById('worker-pill');
     const btn = document.getElementById('worker-toggle');
@@ -1369,6 +1484,186 @@ async function applyRenames(confirmed) {
     }
   } catch (e) {
     document.getElementById('renames-result').textContent = `Error: ${e.message}`;
+  }
+}
+
+// ── Annotate tab ──────────────────────────────────────────────────────────────
+let _snapshotText = '';
+
+async function exportSnapshot() {
+  const btn = document.getElementById('export-snapshot-btn');
+  const statusEl = document.getElementById('export-status');
+  btn.disabled = true;
+  statusEl.textContent = '⏳ Exporting…';
+
+  try {
+    const cat = document.getElementById('annotate-category').value;
+    const url = `/api/library/snapshot?format=txt${cat !== 'all' ? '&category=' + encodeURIComponent(cat) : ''}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+    _snapshotText = await res.text();
+
+    const lines = _snapshotText.split('\n').length;
+    statusEl.textContent = `✓ ${lines} lines`;
+
+    document.getElementById('snapshot-content').value = _snapshotText;
+    document.getElementById('snapshot-preview').style.display = 'block';
+    document.getElementById('copy-snapshot-btn').style.display = 'inline-flex';
+    document.getElementById('download-snapshot-btn').style.display = 'inline-flex';
+  } catch(e) {
+    statusEl.textContent = `Error: ${e.message}`;
+    statusEl.style.color = 'var(--red)';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function copySnapshot() {
+  navigator.clipboard.writeText(_snapshotText).then(() => {
+    const btn = document.getElementById('copy-snapshot-btn');
+    btn.textContent = '✓ Copied!';
+    setTimeout(() => btn.textContent = '📋 Copy', 2000);
+  });
+}
+
+function downloadSnapshot() {
+  if (!_snapshotText) return;
+  const blob = new Blob([_snapshotText], { type: 'text/plain' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `wickedsync-snapshot-${new Date().toISOString().slice(0,10)}.txt`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function onAnnotateFileChosen(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    document.getElementById('annotate-paste-area').value = e.target.result;
+    document.getElementById('parse-status').textContent = `📄 ${file.name} loaded`;
+  };
+  reader.readAsText(file);
+}
+
+async function parseAnnotations() {
+  const text = document.getElementById('annotate-paste-area').value.trim();
+  if (!text) { alert('Paste or upload Claude's annotated response first.'); return; }
+
+  const statusEl = document.getElementById('parse-status');
+  statusEl.textContent = '⏳ Parsing…';
+  statusEl.style.color = 'var(--muted)';
+
+  try {
+    const res = await api('POST', '/api/library/import-annotations', { text, confirmed: false });
+    const p = res.parsed;
+    const total = p.franchises.length + p.renames.length + p.merges.length + p.tags.length;
+    document.getElementById('annotate-directive-count').textContent = total;
+
+    statusEl.textContent = total > 0
+      ? `✓ ${total} directive${total !== 1 ? 's' : ''} parsed`
+      : '⚠ No directives found — check format';
+    statusEl.style.color = total > 0 ? 'var(--green)' : 'var(--yellow)';
+
+    // Build preview table
+    const rows = [];
+
+    if (p.franchises.length) {
+      rows.push(`<tr><td colspan="3" style="padding:8px 10px 4px;font-weight:700;color:var(--accent2);font-size:11px;text-transform:uppercase;letter-spacing:1px">🏷 Franchise Tags (${p.franchises.length})</td></tr>`);
+      p.franchises.forEach(f => rows.push(
+        `<tr><td style="padding:5px 10px;font-family:monospace;color:var(--muted)">${f.folder}</td>
+         <td style="padding:5px 6px;color:var(--muted)">→</td>
+         <td style="padding:5px 10px;color:var(--accent2);font-weight:600">${f.franchise}</td></tr>`
+      ));
+    }
+
+    if (p.renames.length) {
+      rows.push(`<tr><td colspan="3" style="padding:8px 10px 4px;font-weight:700;color:var(--yellow);font-size:11px;text-transform:uppercase;letter-spacing:1px">✏ Renames (${p.renames.length})</td></tr>`);
+      p.renames.forEach(r => rows.push(
+        `<tr><td style="padding:5px 10px;font-family:monospace;color:var(--red)">${r.old}</td>
+         <td style="padding:5px 6px;color:var(--muted)">→</td>
+         <td style="padding:5px 10px;font-family:monospace;color:var(--green)">${r.new}</td></tr>`
+      ));
+    }
+
+    if (p.merges.length) {
+      rows.push(`<tr><td colspan="3" style="padding:8px 10px 4px;font-weight:700;color:var(--yellow);font-size:11px;text-transform:uppercase;letter-spacing:1px">🔀 Merge Candidates (${p.merges.length}) — review only</td></tr>`);
+      p.merges.forEach(m => rows.push(
+        `<tr><td style="padding:5px 10px;font-family:monospace">${m.a}</td>
+         <td style="padding:5px 6px;color:var(--muted)">+</td>
+         <td style="padding:5px 10px;font-family:monospace">${m.b}</td></tr>`
+      ));
+    }
+
+    if (p.tags.length) {
+      rows.push(`<tr><td colspan="3" style="padding:8px 10px 4px;font-weight:700;color:var(--accent);font-size:11px;text-transform:uppercase;letter-spacing:1px">🔖 Re-tag (${p.tags.length})</td></tr>`);
+      p.tags.forEach(t => rows.push(
+        `<tr><td style="padding:5px 10px;font-family:monospace">${t.folder}</td>
+         <td style="padding:5px 6px;color:var(--muted)">→</td>
+         <td style="padding:5px 10px;color:var(--accent)">${t.term}</td></tr>`
+      ));
+    }
+
+    if (res.parse_errors && res.parse_errors.length) {
+      rows.push(`<tr><td colspan="3" style="padding:8px 10px 4px;font-weight:700;color:var(--red);font-size:11px">⚠ Parse Errors (${res.parse_errors.length})</td></tr>`);
+      res.parse_errors.forEach(e => rows.push(
+        `<tr><td colspan="3" style="padding:4px 10px;font-size:11px;color:var(--red)">${e}</td></tr>`
+      ));
+    }
+
+    const wrap = document.getElementById('annotate-preview-wrap');
+    if (rows.length) {
+      wrap.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:13px">
+        <tbody>${rows.join('')}</tbody>
+      </table>`;
+    } else {
+      wrap.innerHTML = '<div style="color:var(--muted);padding:20px;text-align:center">No directives to apply.</div>';
+    }
+
+    document.getElementById('annotate-preview-section').style.display = 'block';
+    document.getElementById('apply-annotations-btn').disabled = total === 0;
+    document.getElementById('annotate-apply-result').textContent = '';
+  } catch(e) {
+    statusEl.textContent = `Error: ${e.message}`;
+    statusEl.style.color = 'var(--red)';
+  }
+}
+
+async function applyAnnotations() {
+  const text = document.getElementById('annotate-paste-area').value.trim();
+  if (!text) return;
+
+  const resultEl = document.getElementById('annotate-apply-result');
+  const btn = document.getElementById('apply-annotations-btn');
+
+  const p = document.getElementById('annotate-preview-wrap').textContent;
+  if (!confirm('Apply all parsed directives now?\n\nRenames are permanent. Franchise/Tag changes update the database.')) return;
+
+  btn.disabled = true;
+  resultEl.textContent = '⏳ Applying…';
+  resultEl.style.color = 'var(--muted)';
+
+  try {
+    const res = await api('POST', '/api/library/import-annotations', { text, confirmed: true });
+    const a = res.applied;
+    const parts = [];
+    if (a.franchises) parts.push(`${a.franchises} franchise tag${a.franchises !== 1 ? 's' : ''}`);
+    if (a.renames)    parts.push(`${a.renames} rename${a.renames !== 1 ? 's' : ''}`);
+    if (a.tags)       parts.push(`${a.tags} re-tag${a.tags !== 1 ? 's' : ''}`);
+
+    resultEl.textContent = `✅ Applied: ${parts.join(', ') || 'nothing'}`;
+    resultEl.style.color = 'var(--green)';
+
+    if (res.rename_errors && res.rename_errors.length) {
+      resultEl.textContent += ` · ${res.rename_errors.length} rename error${res.rename_errors.length !== 1 ? 's' : ''}`;
+      resultEl.style.color = 'var(--yellow)';
+    }
+  } catch(e) {
+    resultEl.textContent = `Error: ${e.message}`;
+    resultEl.style.color = 'var(--red)';
+  } finally {
+    btn.disabled = false;
   }
 }
 

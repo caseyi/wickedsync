@@ -2,6 +2,17 @@
 import os
 from pydantic_settings import BaseSettings
 
+# Read codename from VERSION file (falls back gracefully if missing)
+def _read_version() -> str:
+    try:
+        _here = os.path.dirname(os.path.dirname(__file__))
+        with open(os.path.join(_here, "VERSION")) as f:
+            return f.read().strip()
+    except Exception:
+        return "unknown"
+
+CODENAME = _read_version()
+
 
 class Settings(BaseSettings):
     anthropic_api_key: str = ""
@@ -12,7 +23,7 @@ class Settings(BaseSettings):
     vg_path: str = "/mnt/vg"
     marvel_path: str = "/mnt/marvel"
     db_path: str = "/app/data/wickedsync.db"
-    claude_model: str = "claude-opus-4-6"
+    claude_model: str = "claude-haiku-4-5-20251001"
 
     # Map CSV "Term" values to NAS paths
     @property

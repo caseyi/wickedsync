@@ -27,7 +27,7 @@ from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from app.config import settings
+from app.config import settings, CODENAME
 from app import database as db
 from app.downloader import worker
 from app.claude_agent import ClaudeAgent, _discover_job
@@ -119,6 +119,7 @@ async def get_status():
     stats = await db.get_stats()
     stats["worker_running"] = worker._running
     stats["concurrent_limit"] = settings.concurrent_downloads
+    stats["codename"] = CODENAME
     stats["paths"] = {
         "movies": settings.movies_path,
         "vg": settings.vg_path,
@@ -865,4 +866,200 @@ async def health_apply_renames(req: HealthRenameApplyRequest):
         "results": results,
         "errors": errors,
         "summary": {"renamed": len(results), "errors": len(errors)},
+    }
+
+
+# ── Library Snapshot Export + Annotated Re-import ────────────────────────────
+
+@app.get("/api/library/snapshot")
+async def library_snapshot(format: str = "txt"):
+    """
+    Export a full snapshot of all mounted library folders.
+    format=txt  → plain text optimised for pasting into Claude
+    format=json → machine-readable dict
+
+    The text format includes instructions so Claude knows exactly what
+    annotations to write back.  Paste Claude's response into
+    POST /api/library/import-annotations to apply tags, renames, etc.
+    """
+    from datetime import datetime as _dt
+
+    categories = {}
+    for cat, path in settings.term_to_path.items():
+        if not os.path.isdir(path) or cat == "Wildcard":
+            continue
+        folders = []
+        for name in sorted(os.listdir(path)):
+            full = os.path.join(path, name)
+            if not os.path.isdir(full):
+                continue
+            try:
+                zips = sum(1 for f in os.listdir(full) if f.lower().endswith(".zip"))
+            except PermissionError:
+                zips = -1
+            folders.append({"name": name, "zips": zips})
+        categories[cat] = folders
+
+    if format == "json":
+        return {"generated": _dt.utcnow().isoformat(), "categories": categories}
+
+    # Build plain-text snapshot
+    lines = [
+        f"# WickedSync Library Snapshot — {_dt.utcnow().strftime('%Y-%m-%d')}",
+        "#",
+        "# Categories: " + ", ".join(
+            f"{cat} ({len(fols)} folders)" for cat, fols in categories.items()
+        ),
+        "#",
+        "# ── INSTRUCTIONS FOR CLAUDE ────────────────────────────────────────────",
+        "# Review the folder list below and respond ONLY with annotation lines.",
+        "# Use these exact formats (one per line, no extra text):",
+        "#",
+        "#   FRANCHISE: <folder_name> → <Franchise Name>",
+        "#     (group this folder under a franchise sub-directory)",
+        "#",
+        "#   RENAME: <old_name> → <new_name>",
+        "#     (fix typo / normalise capitalisation)",
+        "#",
+        "#   MERGE: <folder_a> + <folder_b>",
+        "#     (these look like duplicates — flag for review)",
+        "#",
+        "#   TAG: <folder_name> | term=<Movies|VG|Marvel>",
+        "#     (re-categorise to a different term)",
+        "#",
+        "# Omit folders that need no changes.  Do not explain your reasoning.",
+        "# ────────────────────────────────────────────────────────────────────────",
+        "",
+    ]
+
+    for cat, folders in categories.items():
+        lines.append(f"[{cat}]  ({len(folders)} folders)")
+        for f in folders:
+            zip_label = f"  ({f['zips']} zips)" if f["zips"] >= 0 else ""
+            lines.append(f"  {f['name']}{zip_label}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+class ImportAnnotationsRequest(BaseModel):
+    text: str           # the annotated text from Claude
+    confirmed: bool = False   # False = preview only, True = apply
+
+
+@app.post("/api/library/import-annotations")
+async def import_annotations(req: ImportAnnotationsRequest):
+    """
+    Parse Claude's annotation output and apply / preview the changes.
+
+    Supported directives:
+      FRANCHISE: folder_name → Franchise Name
+      RENAME:    old → new
+      MERGE:     a + b          (preview-only, never auto-merged)
+      TAG:       folder | term=Movies
+    """
+    import re as _re
+
+    franchises_to_save = []   # (folder_name, franchise)
+    renames_to_apply   = []   # (old, new)
+    merges_flagged     = []   # (a, b)
+    tags_to_save       = []   # (folder_name, term)
+    parse_errors       = []
+
+    for raw_line in req.text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+
+        if line.upper().startswith("FRANCHISE:"):
+            body = line[10:].strip()
+            m = _re.match(r"^(.+?)\s*[→->]+\s*(.+)$", body)
+            if m:
+                franchises_to_save.append((m.group(1).strip(), m.group(2).strip()))
+            else:
+                parse_errors.append(f"Bad FRANCHISE line: {line}")
+
+        elif line.upper().startswith("RENAME:"):
+            body = line[7:].strip()
+            m = _re.match(r"^(.+?)\s*[→->]+\s*(.+)$", body)
+            if m:
+                renames_to_apply.append((m.group(1).strip(), m.group(2).strip()))
+            else:
+                parse_errors.append(f"Bad RENAME line: {line}")
+
+        elif line.upper().startswith("MERGE:"):
+            body = line[6:].strip()
+            m = _re.match(r"^(.+?)\s*\+\s*(.+)$", body)
+            if m:
+                merges_flagged.append((m.group(1).strip(), m.group(2).strip()))
+            else:
+                parse_errors.append(f"Bad MERGE line: {line}")
+
+        elif line.upper().startswith("TAG:"):
+            body = line[4:].strip()
+            m = _re.match(r"^(.+?)\s*\|\s*term=(\w+)$", body)
+            if m:
+                tags_to_save.append((m.group(1).strip(), m.group(2).strip()))
+            else:
+                parse_errors.append(f"Bad TAG line: {line}")
+
+    applied = {"franchises": 0, "renames": 0, "tags": 0}
+
+    if req.confirmed:
+        # Apply franchise tags
+        for folder_name, franchise in franchises_to_save:
+            await db.set_franchise_tag(folder_name, franchise, source="annotation")
+            applied["franchises"] += 1
+
+        # Apply TAG recategorisations (save as franchise tag with term metadata)
+        for folder_name, term in tags_to_save:
+            await db.set_franchise_tag(folder_name, franchise=folder_name, term=term, source="annotation")
+            applied["tags"] += 1
+
+        # Apply renames (find which category each folder lives in)
+        rename_results = []
+        rename_errors = []
+        for old, new in renames_to_apply:
+            applied_rename = False
+            for cat, base_path in settings.term_to_path.items():
+                src = os.path.join(base_path, old)
+                dest = os.path.join(base_path, new)
+                if os.path.isdir(src):
+                    if os.path.exists(dest):
+                        rename_errors.append({"old": old, "error": f"Destination '{new}' already exists in {cat}"})
+                    else:
+                        try:
+                            import shutil as _shutil
+                            _shutil.move(src, dest)
+                            rename_results.append({"old": old, "new": new, "category": cat})
+                            applied["renames"] += 1
+                            applied_rename = True
+                        except Exception as e:
+                            rename_errors.append({"old": old, "error": str(e)})
+                    break
+            if not applied_rename and not any(r["old"] == old for r in rename_errors):
+                rename_errors.append({"old": old, "error": "Folder not found in any category"})
+    else:
+        rename_results = [{"old": o, "new": n} for o, n in renames_to_apply]
+        rename_errors = []
+
+    return {
+        "dry_run": not req.confirmed,
+        "parsed": {
+            "franchises": [{"folder": f, "franchise": fr} for f, fr in franchises_to_save],
+            "renames": [{"old": o, "new": n} for o, n in renames_to_apply],
+            "merges": [{"a": a, "b": b} for a, b in merges_flagged],
+            "tags": [{"folder": f, "term": t} for f, t in tags_to_save],
+        },
+        "applied": applied if req.confirmed else None,
+        "rename_results": rename_results,
+        "rename_errors": rename_errors,
+        "parse_errors": parse_errors,
+        "summary": {
+            "franchises": len(franchises_to_save),
+            "renames": len(renames_to_apply),
+            "merges": len(merges_flagged),
+            "tags": len(tags_to_save),
+            "parse_errors": len(parse_errors),
+        },
     }
