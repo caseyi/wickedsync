@@ -21,6 +21,7 @@ RUN playwright install chromium
 # Copy app code
 COPY app/ ./app/
 COPY static/ ./static/
+COPY VERSION ./
 
 # Data directory for SQLite DB
 RUN mkdir -p /app/data
