@@ -19,7 +19,7 @@ services:
     environment:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - GUMROAD_COOKIES=${GUMROAD_COOKIES}
-      - CONCURRENT_DOWNLOADS=6
+      - CONCURRENT_DOWNLOADS=1
       - PORT=8088
       - MOVIES_PATH=/mnt/movies
       - VG_PATH=/mnt/vg

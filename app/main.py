@@ -116,9 +116,10 @@ async def index():
 
 @app.get("/api/status")
 async def get_status():
+    from app.downloader import get_concurrency
     stats = await db.get_stats()
     stats["worker_running"] = worker._running
-    stats["concurrent_limit"] = settings.concurrent_downloads
+    stats["concurrent_limit"] = get_concurrency()
     stats["codename"] = CODENAME
     stats["paths"] = {
         "movies": settings.movies_path,
@@ -373,6 +374,25 @@ async def start_worker():
 async def stop_worker():
     worker.stop()
     return {"result": "stopped"}
+
+
+class ConcurrencyRequest(BaseModel):
+    limit: int
+
+
+@app.post("/api/worker/concurrency")
+async def set_worker_concurrency(req: ConcurrencyRequest):
+    """Adjust the number of simultaneous downloads at runtime (min 1, max 20)."""
+    from app.downloader import set_concurrency, get_concurrency
+    clamped = max(1, min(20, req.limit))
+    set_concurrency(clamped)
+    return {"concurrent_limit": clamped}
+
+
+@app.get("/api/worker/concurrency")
+async def get_worker_concurrency():
+    from app.downloader import get_concurrency
+    return {"concurrent_limit": get_concurrency()}
 
 
 # ── Library Snapshot (must be before /{category} to avoid route shadowing) ────
@@ -1000,7 +1020,7 @@ async def import_annotations(req: ImportAnnotationsRequest):
 
         if line.upper().startswith("FRANCHISE:"):
             body = line[10:].strip()
-            m = _re.match(r"^(.+?)\s*[→->]+\s*(.+)$", body)
+            m = _re.match(r"^(.+?)\s*(?:→|->|>)\s*(.+)$", body)
             if m:
                 franchises_to_save.append((m.group(1).strip(), m.group(2).strip()))
             else:
@@ -1008,7 +1028,7 @@ async def import_annotations(req: ImportAnnotationsRequest):
 
         elif line.upper().startswith("RENAME:"):
             body = line[7:].strip()
-            m = _re.match(r"^(.+?)\s*[→->]+\s*(.+)$", body)
+            m = _re.match(r"^(.+?)\s*(?:→|->|>)\s*(.+)$", body)
             if m:
                 renames_to_apply.append((m.group(1).strip(), m.group(2).strip()))
             else:

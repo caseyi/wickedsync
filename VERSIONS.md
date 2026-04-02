@@ -4,7 +4,7 @@ Versions follow an alphabetical comic book character naming scheme.
 
 | Codename      | Letter | Notes                                      |
 |---------------|--------|--------------------------------------------|
-| ant-man       | A      | Current — download manager, health tab, franchise tags |
+| ant-man       | A      | Current — download manager, health tab, franchise tags, configurable concurrent downloads (default 1) |
 | batman        | B      | (next)                                     |
 | cyclops       | C      |                                            |
 | daredevil     | D      |                                            |

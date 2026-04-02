@@ -17,7 +17,7 @@ CODENAME = _read_version()
 class Settings(BaseSettings):
     anthropic_api_key: str = ""
     gumroad_cookies: str = ""
-    concurrent_downloads: int = 6
+    concurrent_downloads: int = 1
     port: int = 8088
     movies_path: str = "/mnt/movies"
     vg_path: str = "/mnt/vg"

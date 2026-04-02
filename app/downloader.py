@@ -67,15 +67,39 @@ def _chunk_size() -> int:
     return random.randint(_CHUNK_MIN, _CHUNK_MAX)
 
 
-# Semaphore is created once and shared across all download tasks
+# Semaphore is created lazily and can be replaced at runtime via set_concurrency()
 _semaphore: Optional[asyncio.Semaphore] = None
+_current_limit: int = 0  # 0 = not yet initialised; will be set on first call
 
 
 def get_semaphore() -> asyncio.Semaphore:
-    global _semaphore
+    global _semaphore, _current_limit
     if _semaphore is None:
-        _semaphore = asyncio.Semaphore(settings.concurrent_downloads)
+        _current_limit = settings.concurrent_downloads
+        _semaphore = asyncio.Semaphore(_current_limit)
     return _semaphore
+
+
+def get_concurrency() -> int:
+    """Return the currently active concurrency limit."""
+    global _current_limit
+    if _current_limit == 0:
+        return settings.concurrent_downloads
+    return _current_limit
+
+
+def set_concurrency(limit: int) -> None:
+    """
+    Replace the download semaphore with a new one at the given limit.
+
+    Downloads already in-flight keep their slot on the old semaphore and
+    complete normally.  New downloads pick up the new semaphore immediately.
+    """
+    global _semaphore, _current_limit
+    limit = max(1, limit)
+    _current_limit = limit
+    _semaphore = asyncio.Semaphore(limit)
+    logger.info(f"Concurrency limit set to {limit}")
 
 
 async def download_file(

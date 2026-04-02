@@ -152,6 +152,11 @@
     <h1>Wicked<span>Sync</span></h1>
     <span id="worker-pill" class="status-pill stopped">● stopped</span>
     <button class="btn btn-secondary btn-sm" id="worker-toggle">Start</button>
+    <label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;color:var(--text-muted);margin-left:6px" title="Simultaneous downloads">
+      <span>⬇</span>
+      <input id="concurrency-input" type="number" min="1" max="20" value="1"
+        style="width:42px;padding:2px 4px;font-size:12px;background:var(--bg2);border:1px solid var(--border);border-radius:4px;color:var(--text);text-align:center">
+    </label>
     <span id="codename-badge" style="font-size:11px;font-weight:700;color:var(--accent2);background:rgba(6,182,212,0.12);border:1px solid var(--accent2);border-radius:99px;padding:2px 10px;letter-spacing:0.5px;opacity:0" title="Build version">–</span>
     <div class="stat">
       <b id="stat-done">0</b>/<b id="stat-total">0</b> files
@@ -697,6 +702,11 @@ async function refreshStatus() {
       pill.textContent = '● stopped';
       btn.textContent = 'Start';
     }
+    // Sync concurrency input with server value (don't override while user is typing)
+    const concInput = document.getElementById('concurrency-input');
+    if (concInput && document.activeElement !== concInput) {
+      concInput.value = s.concurrent_limit ?? 1;
+    }
   } catch (e) { console.error('status error', e); }
 }
 
@@ -705,6 +715,18 @@ document.getElementById('worker-toggle').addEventListener('click', async () => {
   const isRunning = btn.textContent === 'Stop';
   await api('POST', isRunning ? '/api/worker/stop' : '/api/worker/start');
   refreshStatus();
+});
+
+// Update concurrency on change (debounced)
+let _concDebounce = null;
+document.getElementById('concurrency-input').addEventListener('change', async (e) => {
+  clearTimeout(_concDebounce);
+  _concDebounce = setTimeout(async () => {
+    const val = parseInt(e.target.value, 10);
+    if (!isNaN(val) && val >= 1) {
+      await api('POST', '/api/worker/concurrency', { limit: val });
+    }
+  }, 300);
 });
 
 // ── Jobs ──────────────────────────────────────────────────────────────────────
