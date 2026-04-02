@@ -14,13 +14,12 @@ services:
     network_mode: host
     volumes:
       - ./data:/app/data
-      - "/volume1/STL Archive/Wicked Archive/Marvel:/mnt/marvel"
+      # Full STL Archive root — all subfolders selectable in the UI
+      - "/volume1/STL Archive:/mnt/archive"
     environment:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - GUMROAD_COOKIES=${GUMROAD_COOKIES}
       - CONCURRENT_DOWNLOADS=6
       - PORT=8088
-      - MOVIES_PATH=/mnt/marvel   # fallback — Movies items won't route here anyway
-      - VG_PATH=/mnt/marvel       # fallback
-      - MARVEL_PATH=/mnt/marvel
+      - ARCHIVE_PATH=/mnt/archive
       - CLAUDE_MODEL=claude-opus-4-6

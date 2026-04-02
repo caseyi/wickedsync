@@ -14,14 +14,12 @@ services:
     network_mode: host
     volumes:
       - ./data:/app/data
-      - "/volume1/STL Archive/Wicked Archive/Movies:/mnt/movies"
-      - "/volume1/STL Archive/Wicked Archive/Video Games:/mnt/vg"
+      # Full STL Archive root — all subfolders selectable in the UI
+      - "/volume1/STL Archive:/mnt/archive"
     environment:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - GUMROAD_COOKIES=${GUMROAD_COOKIES}
       - CONCURRENT_DOWNLOADS=1
       - PORT=8088
-      - MOVIES_PATH=/mnt/movies
-      - VG_PATH=/mnt/vg
-      - MARVEL_PATH=/mnt/marvel   # not mounted on Dagobah — path won't exist, category skipped
+      - ARCHIVE_PATH=/mnt/archive
       - CLAUDE_MODEL=claude-haiku-4-5-20251001

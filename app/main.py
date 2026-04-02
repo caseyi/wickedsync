@@ -121,11 +121,8 @@ async def get_status():
     stats["worker_running"] = worker._running
     stats["concurrent_limit"] = get_concurrency()
     stats["codename"] = CODENAME
-    stats["paths"] = {
-        "movies": settings.movies_path,
-        "vg": settings.vg_path,
-        "marvel": settings.marvel_path,
-    }
+    stats["archive_path"] = settings.archive_path
+    stats["archive_subdirs"] = list(settings.archive_subdirs.keys())
     return stats
 
 
@@ -402,20 +399,61 @@ async def get_download_progress():
     return get_all_progress()
 
 
+# ── Library Folders (must be before /{category} to avoid route shadowing) ────
+
+@app.get("/api/library/folders")
+async def list_archive_folders():
+    """
+    List all immediate subdirectories of the archive root.
+    Returns a list of {name, path} objects for the UI folder selector.
+    Also includes a synthetic "(All)" entry for the root itself.
+    """
+    archive = settings.archive_path
+    subdirs = settings.archive_subdirs  # {name: path}
+
+    entries = []
+    if os.path.isdir(archive):
+        entries.append({"name": "(All)", "path": archive, "folder_count": len(subdirs)})
+    for name, path in subdirs.items():
+        try:
+            count = sum(1 for e in os.listdir(path) if os.path.isdir(os.path.join(path, e)))
+        except PermissionError:
+            count = -1
+        entries.append({"name": name, "path": path, "folder_count": count})
+
+    return {"archive_path": archive, "folders": entries}
+
+
 # ── Library Snapshot (must be before /{category} to avoid route shadowing) ────
 
 @app.get("/api/library/snapshot")
-async def library_snapshot(format: str = "txt"):
+async def library_snapshot(format: str = "txt", root: str = ""):
     """
-    Export a full snapshot of all mounted library folders.
+    Export a snapshot of one or all library folders.
+    root  → subdir name (e.g. "Movies") or absolute path, or "" for all.
     format=txt  → plain text optimised for pasting into Claude
     format=json → machine-readable dict
     """
     from datetime import datetime as _dt
 
+    # Resolve which paths to snapshot
+    if root:
+        resolved = settings.resolve_working_path(root)
+        if not resolved:
+            raise HTTPException(status_code=400, detail=f"Unknown or inaccessible path: {root}")
+        # Build a single-entry categories dict
+        display = os.path.basename(resolved) or resolved
+        scan_map = {display: resolved}
+    else:
+        # All archive subdirs (skip "(All)" synthetic entry)
+        scan_map = settings.archive_subdirs
+        # Fallback: use term_to_path if archive_subdirs is empty
+        if not scan_map:
+            scan_map = {k: v for k, v in settings.term_to_path.items() if k != "Wildcard"}
+
     categories = {}
-    for cat, path in settings.term_to_path.items():
-        if not os.path.isdir(path) or cat == "Wildcard":
+    for cat, path in scan_map.items():
+        if not os.path.isdir(path):
             continue
         folders = []
         for name in sorted(os.listdir(path)):
@@ -473,14 +511,28 @@ async def library_snapshot(format: str = "txt"):
 # ── Library browser ───────────────────────────────────────────────────────────
 
 @app.get("/api/library/{category}")
-async def list_library(category: str, search: str = ""):
-    path_map = settings.term_to_path
-    if category not in path_map:
-        raise HTTPException(status_code=400, detail=f"Unknown category: {category}")
+async def list_library(category: str, search: str = "", root: str = ""):
+    """
+    Browse a library folder.
+    category can be a known term (Movies, VG, …) or a subdir name from archive_subdirs.
+    root overrides category with a literal path (must be under archive_path).
+    """
+    if root:
+        base_path = settings.resolve_working_path(root)
+        if not base_path:
+            raise HTTPException(status_code=400, detail=f"Unknown or inaccessible path: {root}")
+        display_cat = os.path.basename(base_path) or root
+    else:
+        # Try archive_subdirs first (dynamic), then legacy term_to_path
+        subdirs = settings.archive_subdirs
+        path_map = {**subdirs, **settings.term_to_path}
+        if category not in path_map:
+            raise HTTPException(status_code=400, detail=f"Unknown category: {category}")
+        base_path = path_map[category]
+        display_cat = category
 
-    base_path = path_map[category]
     if not os.path.isdir(base_path):
-        return {"category": category, "path": base_path, "folders": [], "error": "Path not mounted"}
+        return {"category": display_cat, "path": base_path, "folders": [], "error": "Path not mounted"}
 
     folders = []
     for name in sorted(os.listdir(base_path)):
@@ -491,7 +543,7 @@ async def list_library(category: str, search: str = ""):
             zips = [f for f in os.listdir(full) if f.endswith(".zip")]
             folders.append({"name": name, "zip_count": len(zips)})
 
-    return {"category": category, "path": base_path, "folder_count": len(folders), "folders": folders}
+    return {"category": display_cat, "path": base_path, "folder_count": len(folders), "folders": folders}
 
 
 # ── Franchise tags ────────────────────────────────────────────────────────────
@@ -517,7 +569,11 @@ async def tags_library_overview():
     tag_rows = await db.list_franchise_tags()
     franchise_map = {r["model_name"]: r for r in tag_rows}
     result = []
-    for cat, path in settings.term_to_path.items():
+
+    # Use dynamic archive subdirs (falls back to legacy term_to_path)
+    scan_map = settings.archive_subdirs or {k: v for k, v in settings.term_to_path.items() if k != "Wildcard"}
+
+    for cat, path in scan_map.items():
         if not os.path.isdir(path):
             continue
         try:
@@ -793,9 +849,22 @@ class OrganizeConfirmRequest(BaseModel):
 
 
 def _resolve_org_path(category: str, custom_path: str | None) -> str:
-    """Return the base directory to scan, honouring custom_path if given."""
+    """
+    Return the base directory to scan.
+    Resolution order:
+      1. custom_path (explicit override)
+      2. archive_subdirs (dynamic folder names, e.g. "Wicked Archive", "Movies")
+      3. term_to_path   (legacy CSV term names: Movies, VG, Marvel)
+      4. "_all" special token → archive_path root
+    """
     if custom_path:
-        return custom_path
+        safe = settings.resolve_working_path(custom_path)
+        return safe if safe else custom_path  # trust explicit paths
+    if category == "_all":
+        return settings.archive_path
+    subdirs = settings.archive_subdirs
+    if category in subdirs:
+        return subdirs[category]
     path_map = settings.term_to_path
     if category not in path_map:
         raise HTTPException(status_code=400, detail=f"Unknown category: {category}")
