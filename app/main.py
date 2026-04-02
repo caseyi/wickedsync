@@ -192,6 +192,38 @@ async def retry_errors():
     return {"retried": retried, "message": f"Re-queued {retried} jobs."}
 
 
+@app.post("/api/jobs/reset-discovering")
+async def reset_discovering():
+    """
+    Reset all jobs stuck in 'discovering' back to 'pending'.
+
+    Use this when the NAS is being hammered by many simultaneous Playwright
+    browser instances.  After resetting, jobs will re-enter the serial
+    discovery queue (one Chromium at a time) on next retry.
+
+    NOTE: This only updates the DB status.  Any Playwright processes already
+    running in the container will finish or time out on their own — restart
+    the container to kill them immediately.
+    """
+    discovering_jobs = await db.list_jobs(status="discovering")
+    if not discovering_jobs:
+        return {"reset": 0, "message": "No discovering jobs found."}
+
+    reset = 0
+    for job in discovering_jobs:
+        await db.update_job(job["id"], status="pending", error_msg=None)
+        reset += 1
+
+    return {
+        "reset": reset,
+        "message": (
+            f"Reset {reset} job(s) from 'discovering' → 'pending'. "
+            "They will re-enter the serial discovery queue on next retry. "
+            "Restart the container to kill any Playwright processes still running."
+        ),
+    }
+
+
 @app.post("/api/jobs", status_code=201)
 async def add_job(req: AddJobRequest):
     if await db.job_exists(req.product_url):

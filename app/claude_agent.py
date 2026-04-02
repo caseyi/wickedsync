@@ -353,62 +353,88 @@ TOOL_HANDLERS = {
 }
 
 # ── Background: job discovery ─────────────────────────────────────────────────
+# Limit to ONE concurrent Playwright/Chromium discovery at a time.
+# Each discovery launches a headless browser; running many simultaneously
+# would saturate the NAS CPU.  Jobs queue up here and run serially.
+_discover_semaphore = asyncio.Semaphore(1)
+
+# Maximum wall-clock time (seconds) allowed for a single discovery attempt.
+_DISCOVER_TIMEOUT = 90
+
 
 async def _discover_job(job_id: int):
     """
     Background task: navigate to the product's Gumroad page, extract
     all download file URLs, and insert them as 'pending' file rows.
-    """
-    from app.gumroad import GumroadClient
 
+    Serialised via _discover_semaphore — only one Playwright browser runs
+    at a time regardless of how many jobs are queued.
+    """
+    # Fast pre-check before waiting for the semaphore: if the job was
+    # already handled (reset, cancelled, ingest-ingested) skip it.
     job = await db.get_job(job_id)
-    if not job:
+    if not job or job["status"] not in ("pending", "discovering"):
         return
 
-    await db.update_job(job_id, status="discovering")
-
-    try:
-        client = GumroadClient(settings.gumroad_cookies)
-        product_url = job["product_url"]
-
-        # Resolve to content URL if needed
-        content_url = product_url
-        if "/d/" not in product_url:
-            resolved = await client.resolve_content_url(product_url)
-            if not resolved:
-                await db.update_job(job_id, status="error", error_msg="Could not find content URL")
-                return
-            content_url = resolved
-            await db.update_job(job_id, content_url=content_url)
-
-        # Get all downloadable files
-        files = await client.get_download_files(content_url)
-
-        if not files:
-            await db.update_job(job_id, status="error", error_msg="No files found on content page")
+    async with _discover_semaphore:
+        # Re-fetch after acquiring the lock — status may have changed while waiting
+        job = await db.get_job(job_id)
+        if not job or job["status"] not in ("pending", "discovering"):
             return
 
-        # Determine destination base path
-        term = job["term"]
-        base_path = settings.term_to_path.get(term, settings.movies_path)
-        from app.organizer import dest_path_for_file, clean_filename
+        await db.update_job(job_id, status="discovering")
+        try:
+            await asyncio.wait_for(_run_discovery(job_id, job), timeout=_DISCOVER_TIMEOUT)
+        except asyncio.TimeoutError:
+            logger.error(f"Discovery timed out for job {job_id} after {_DISCOVER_TIMEOUT}s")
+            await db.update_job(job_id, status="error",
+                                error_msg=f"Discovery timed out after {_DISCOVER_TIMEOUT}s")
+        except Exception as e:
+            logger.error(f"Discovery error for job {job_id}: {e}")
+            await db.update_job(job_id, status="error", error_msg=str(e)[:500])
 
-        for f in files:
-            filename = clean_filename(f["filename"])
-            dest = dest_path_for_file(base_path, filename)
-            await db.create_file(
-                job_id=job_id,
-                filename=filename,
-                cdn_url=f["cdn_url"],
-                dest_path=dest,
-            )
 
-        await db.update_job(job_id, status="queued", file_count=len(files), content_url=content_url)
-        logger.info(f"Job {job_id} ({job['model_name']}): discovered {len(files)} files")
+async def _run_discovery(job_id: int, job: dict):
+    """Inner discovery logic, called under the semaphore with a timeout."""
+    from app.gumroad import GumroadClient
 
-    except Exception as e:
-        logger.error(f"Discovery error for job {job_id}: {e}")
-        await db.update_job(job_id, status="error", error_msg=str(e)[:500])
+    client = GumroadClient(settings.gumroad_cookies)
+    product_url = job["product_url"]
+
+    # Resolve to content URL if needed
+    content_url = product_url
+    if "/d/" not in product_url:
+        resolved = await client.resolve_content_url(product_url)
+        if not resolved:
+            await db.update_job(job_id, status="error", error_msg="Could not find content URL")
+            return
+        content_url = resolved
+        await db.update_job(job_id, content_url=content_url)
+
+    # Get all downloadable files
+    files = await client.get_download_files(content_url)
+
+    if not files:
+        await db.update_job(job_id, status="error", error_msg="No files found on content page")
+        return
+
+    # Determine destination base path
+    term = job["term"]
+    base_path = settings.term_to_path.get(term) or settings.archive_path
+    from app.organizer import dest_path_for_file, clean_filename
+
+    for f in files:
+        filename = clean_filename(f["filename"])
+        dest = dest_path_for_file(base_path, filename)
+        await db.create_file(
+            job_id=job_id,
+            filename=filename,
+            cdn_url=f["cdn_url"],
+            dest_path=dest,
+        )
+
+    await db.update_job(job_id, status="queued", file_count=len(files), content_url=content_url)
+    logger.info(f"Job {job_id} ({job['model_name']}): discovered {len(files)} files")
 
 
 # ── Agent chat ────────────────────────────────────────────────────────────────

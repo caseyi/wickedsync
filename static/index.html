@@ -288,6 +288,9 @@
           <button class="btn btn-sm" id="retry-errors-btn" style="background:#7f1d1d;color:#fca5a5;display:none" onclick="retryErrors()">
             ↺ Retry All Errors
           </button>
+          <button class="btn btn-sm" id="reset-discovering-btn" style="background:#1e3a5f;color:#60a5fa;display:none" onclick="resetDiscovering()" title="Stop hammering the NAS — reset stuck discovering jobs back to pending">
+            ⏹ Reset Discovering (<span id="discovering-count">0</span>)
+          </button>
           <span id="jobs-count" style="color:var(--muted);font-size:12px;margin-left:auto"></span>
         </div>
 
@@ -809,7 +812,31 @@ async function loadJobsStats() {
     const retryBtn = document.getElementById('retry-errors-btn');
     retryBtn.style.display = s.error_count > 0 ? 'inline-flex' : 'none';
     retryBtn.textContent = `↺ Retry ${s.error_count} Error${s.error_count !== 1 ? 's' : ''}`;
+
+    // Show/hide discovering reset button
+    const discCount = (s.by_status || {})['discovering'] || 0;
+    const discBtn = document.getElementById('reset-discovering-btn');
+    const discCountEl = document.getElementById('discovering-count');
+    if (discBtn) {
+      discBtn.style.display = discCount > 0 ? 'inline-flex' : 'none';
+      if (discCountEl) discCountEl.textContent = discCount;
+    }
   } catch(e) { console.error('stats error', e); }
+}
+
+async function resetDiscovering() {
+  const btn = document.getElementById('reset-discovering-btn');
+  btn.disabled = true;
+  try {
+    const res = await api('POST', '/api/jobs/reset-discovering');
+    appendChat('system', res.message);
+    await loadJobs();
+    await loadJobsStats();
+  } catch(e) {
+    appendChat('system', `Reset error: ${e.message}`);
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 async function retryErrors() {
