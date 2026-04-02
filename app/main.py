@@ -131,7 +131,7 @@ async def get_status():
 
 @app.get("/api/jobs")
 async def list_jobs(status: str | None = None):
-    return await db.list_jobs(status)
+    return await db.get_jobs_with_files(status)
 
 
 @app.get("/api/jobs/{job_id}")
@@ -143,6 +143,56 @@ async def get_job(job_id: int):
     return {**job, "files": files}
 
 
+@app.get("/api/jobs/stats")
+async def jobs_stats():
+    """Return per-category counts and a breakdown of statuses."""
+    jobs = await db.list_jobs()
+    by_term: dict[str, dict] = {}
+    status_counts: dict[str, int] = {}
+    total_size = 0
+
+    for j in jobs:
+        term = j["term"]
+        if term not in by_term:
+            by_term[term] = {"total": 0, "done": 0, "error": 0, "pending": 0, "downloading": 0}
+        by_term[term]["total"] += 1
+        st = j["status"]
+        by_term[term][st] = by_term[term].get(st, 0) + 1
+        status_counts[st] = status_counts.get(st, 0) + 1
+
+    # Sum completed file sizes
+    all_files = await db.get_all_done_files()
+    total_size = sum(f.get("size_bytes", 0) or 0 for f in all_files)
+
+    return {
+        "total_jobs": len(jobs),
+        "by_term": by_term,
+        "by_status": status_counts,
+        "done_gb": round(total_size / 1e9, 2),
+        "error_count": status_counts.get("error", 0),
+    }
+
+
+@app.post("/api/jobs/retry-errors")
+async def retry_errors():
+    """Reset all error-status jobs back to pending and re-queue discovery."""
+    error_jobs = await db.list_jobs(status="error")
+    if not error_jobs:
+        return {"retried": 0, "message": "No error jobs found."}
+
+    retried = 0
+    for job in error_jobs:
+        await db.update_job(job["id"], status="pending", error_msg=None)
+        asyncio.create_task(_discover_job(job["id"]))
+        retried += 1
+
+    # Auto-start worker
+    if not worker._running:
+        worker.start()
+
+    return {"retried": retried, "message": f"Re-queued {retried} jobs."}
+
+
 @app.post("/api/jobs", status_code=201)
 async def add_job(req: AddJobRequest):
     if await db.job_exists(req.product_url):
@@ -150,6 +200,12 @@ async def add_job(req: AddJobRequest):
 
     job_id = await db.create_job(req.model_name, req.term, req.product_url)
     asyncio.create_task(_discover_job(job_id))
+
+    # Auto-start worker if idle
+    if not worker._running:
+        worker.start()
+        logger.info("Worker auto-started on new job.")
+
     return {"result": "queued", "job_id": job_id}
 
 
@@ -195,6 +251,11 @@ async def import_csv(req: ImportCsvRequest):
             queued += 1
         except Exception as e:
             errors.append(f"{model_name}: {e}")
+
+    # Auto-start worker if idle and we queued something
+    if queued > 0 and not worker._running:
+        worker.start()
+        logger.info(f"Worker auto-started after CSV import of {queued} jobs.")
 
     return {"queued": queued, "skipped_duplicates": skipped, "errors": errors[:20]}
 

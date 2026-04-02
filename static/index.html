@@ -177,7 +177,15 @@
 
       <div class="sidebar-section">
         <h3>Import CSV</h3>
-        <textarea id="csv-input" placeholder="Paste CSV content here (Year,Month,Term,Model Name,Type,Gumroad URL)…"></textarea>
+        <!-- File picker row -->
+        <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px">
+          <label style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:7px 10px;font-size:12px;color:var(--muted);cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" id="csv-file-label" title="Click to choose a CSV file">
+            📂 Choose CSV file…
+            <input type="file" id="csv-file-input" accept=".csv,.txt" style="display:none" onchange="onCsvFileChosen(this)">
+          </label>
+          <button class="btn btn-secondary btn-sm" onclick="document.getElementById('csv-file-input').click()">Browse</button>
+        </div>
+        <textarea id="csv-input" placeholder="…or paste CSV text here (Year,Month,Term,Model Name,Type,Gumroad URL)"></textarea>
         <div style="display:flex;gap:6px;margin-top:6px">
           <input type="text" id="csv-filter-month" placeholder="Month filter" style="flex:1">
           <input type="text" id="csv-filter-term" placeholder="Term filter" style="flex:1">
@@ -209,6 +217,13 @@
 
       <!-- Downloads tab -->
       <div class="tab-panel active" id="tab-jobs">
+
+        <!-- Stats bar -->
+        <div id="jobs-stats-bar" style="display:flex;gap:16px;background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:10px 16px;margin-bottom:12px;font-size:12px;flex-wrap:wrap;align-items:center">
+          <span style="color:var(--muted)">Loading stats…</span>
+        </div>
+
+        <!-- Toolbar -->
         <div class="jobs-toolbar">
           <select id="jobs-filter" onchange="loadJobs()">
             <option value="">All</option>
@@ -220,10 +235,15 @@
             <option value="error">Error</option>
           </select>
           <button class="btn btn-secondary btn-sm" onclick="loadJobs()">↻ Refresh</button>
+          <button class="btn btn-sm" id="retry-errors-btn" style="background:#7f1d1d;color:#fca5a5;display:none" onclick="retryErrors()">
+            ↺ Retry All Errors
+          </button>
+          <span id="jobs-count" style="color:var(--muted);font-size:12px;margin-left:auto"></span>
         </div>
+
         <table>
           <thead>
-            <tr><th>Model</th><th>Category</th><th>Status</th><th>Progress</th></tr>
+            <tr><th>Model</th><th>Category</th><th>Status</th><th>Progress / Size</th></tr>
           </thead>
           <tbody id="jobs-tbody">
             <tr><td colspan="4" class="loading">Loading…</td></tr>
@@ -527,7 +547,7 @@ function showTab(id) {
   document.querySelectorAll('.tab, .tab-panel').forEach(el => el.classList.remove('active'));
   document.querySelector(`.tab[onclick="showTab('${id}')"]`).classList.add('active');
   document.getElementById('tab-' + id).classList.add('active');
-  if (id === 'jobs') loadJobs();
+  if (id === 'jobs') { loadJobs(); loadJobsStats(); }
   if (id === 'library') loadLibrary();
   if (id === 'tags') loadTags();
 }
@@ -567,26 +587,83 @@ document.getElementById('worker-toggle').addEventListener('click', async () => {
 });
 
 // ── Jobs ──────────────────────────────────────────────────────────────────────
+function fmtBytes(b) {
+  if (!b) return '';
+  if (b >= 1e9) return `${(b/1e9).toFixed(1)} GB`;
+  if (b >= 1e6) return `${(b/1e6).toFixed(0)} MB`;
+  return `${(b/1e3).toFixed(0)} KB`;
+}
+
+async function loadJobsStats() {
+  try {
+    const s = await api('GET', '/api/jobs/stats');
+    const bar = document.getElementById('jobs-stats-bar');
+    const terms = Object.entries(s.by_term || {});
+    const termIcons = { Movies: '🎬', VG: '🎮', Marvel: '🦸', Wildcard: '✨' };
+    bar.innerHTML = terms.map(([term, counts]) => `
+      <div style="display:flex;flex-direction:column;gap:1px;align-items:center;min-width:80px">
+        <span style="font-weight:700;font-size:13px">${termIcons[term] || '📁'} ${term}</span>
+        <span style="color:var(--muted)">${counts.done || 0}/${counts.total} done${counts.error ? ` · <span style="color:var(--red)">${counts.error} err</span>` : ''}</span>
+      </div>
+    `).join('<div style="width:1px;background:var(--border);align-self:stretch"></div>') +
+    `<div style="margin-left:auto;display:flex;flex-direction:column;align-items:flex-end;gap:1px">
+       <span style="font-weight:700;font-size:13px">${s.done_gb} GB downloaded</span>
+       <span style="color:var(--muted)">${s.total_jobs} total jobs</span>
+     </div>`;
+
+    // Show/hide retry button
+    const retryBtn = document.getElementById('retry-errors-btn');
+    retryBtn.style.display = s.error_count > 0 ? 'inline-flex' : 'none';
+    retryBtn.textContent = `↺ Retry ${s.error_count} Error${s.error_count !== 1 ? 's' : ''}`;
+  } catch(e) { console.error('stats error', e); }
+}
+
+async function retryErrors() {
+  const btn = document.getElementById('retry-errors-btn');
+  btn.disabled = true;
+  try {
+    const res = await api('POST', '/api/jobs/retry-errors');
+    appendChat('system', res.message);
+    await loadJobs();
+    await loadJobsStats();
+  } catch(e) {
+    appendChat('system', `Retry error: ${e.message}`);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 async function loadJobs() {
   const status = document.getElementById('jobs-filter').value;
   const jobs = await api('GET', '/api/jobs' + (status ? `?status=${status}` : ''));
   const tbody = document.getElementById('jobs-tbody');
+  const countEl = document.getElementById('jobs-count');
+
   if (!jobs.length) {
     tbody.innerHTML = '<tr><td colspan="4" class="empty">No jobs yet. Add a URL or import a CSV.</td></tr>';
+    countEl.textContent = '';
     return;
   }
-  tbody.innerHTML = jobs.map(j => `
+
+  countEl.textContent = `${jobs.length} job${jobs.length !== 1 ? 's' : ''}`;
+
+  tbody.innerHTML = jobs.map(j => {
+    const sizeStr = j.total_bytes > 0 ? `<span style="color:var(--muted);font-size:11px">${fmtBytes(j.total_bytes)}</span>` : '';
+    return `
     <tr onclick="showJobDetail(${j.id})" style="cursor:pointer">
       <td>${j.model_name}</td>
       <td style="color:var(--muted)">${j.term}</td>
       <td>${badge(j.status)}</td>
       <td>
-        ${j.file_count > 0 ? `${j.done_count}/${j.file_count}` : '–'}
+        <div style="display:flex;align-items:center;gap:8px">
+          <span>${j.file_count > 0 ? `${j.done_count}/${j.file_count}` : '–'}</span>
+          ${sizeStr}
+        </div>
         ${j.file_count > 0 ? `<div class="progress-bar"><div class="progress-fill" style="width:${Math.round(j.done_count/j.file_count*100)}%"></div></div>` : ''}
         ${j.error_msg ? `<div class="error-text">${j.error_msg.substring(0,80)}</div>` : ''}
       </td>
-    </tr>
-  `).join('');
+    </tr>`;
+  }).join('');
 }
 
 async function showJobDetail(jobId) {
@@ -612,15 +689,27 @@ async function addSingleJob() {
   } catch (e) { appendChat('system', `Error: ${e.message}`); }
 }
 
+function onCsvFileChosen(input) {
+  const file = input.files[0];
+  if (!file) return;
+  document.getElementById('csv-file-label').childNodes[0].textContent = `📄 ${file.name}  `;
+  const reader = new FileReader();
+  reader.onload = e => {
+    document.getElementById('csv-input').value = e.target.result;
+  };
+  reader.readAsText(file);
+}
+
 async function importCsv() {
   const csv_text = document.getElementById('csv-input').value.trim();
   const filter_month = document.getElementById('csv-filter-month').value.trim() || undefined;
   const filter_term = document.getElementById('csv-filter-term').value.trim() || undefined;
-  if (!csv_text) { alert('Paste CSV content first.'); return; }
+  if (!csv_text) { alert('Choose a CSV file or paste CSV content first.'); return; }
   try {
     const res = await api('POST', '/api/import/csv', { csv_text, filter_month, filter_term });
     appendChat('system', `CSV import: ${res.queued} queued, ${res.skipped_duplicates} skipped.${res.errors.length ? ' Errors: ' + res.errors.join(', ') : ''}`);
     loadJobs();
+    loadJobsStats();
   } catch (e) { appendChat('system', `Error: ${e.message}`); }
 }
 
@@ -1285,10 +1374,12 @@ async function applyRenames(confirmed) {
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 loadJobs();
+loadJobsStats();
 loadChatHistory();
 refreshStatus();
 loadOrgTargets();
 setInterval(refreshStatus, 10000);
+setInterval(loadJobsStats, 30000);
 setInterval(() => {
   const activeTab = document.querySelector('.tab-panel.active');
   if (activeTab?.id === 'tab-jobs') loadJobs();

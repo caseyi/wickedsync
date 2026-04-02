@@ -156,6 +156,36 @@ async def get_pending_files() -> list[dict]:
             return [dict(r) for r in await cur.fetchall()]
 
 
+async def get_all_done_files() -> list[dict]:
+    """Return all completed files (for size totals, stats, etc.)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT id, job_id, filename, size_bytes, dest_path FROM files WHERE status='done'"
+        ) as cur:
+            return [dict(r) for r in await cur.fetchall()]
+
+
+async def get_jobs_with_files(status: Optional[str] = None) -> list[dict]:
+    """Return jobs with an aggregated total_bytes field from their done files."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        q = """
+            SELECT j.*,
+                   COALESCE(SUM(CASE WHEN f.status='done' THEN f.size_bytes ELSE 0 END), 0) AS total_bytes
+            FROM jobs j
+            LEFT JOIN files f ON f.job_id = j.id
+        """
+        if status:
+            q += " WHERE j.status=?"
+            q += " GROUP BY j.id ORDER BY j.created_at DESC"
+            async with db.execute(q, (status,)) as cur:
+                return [dict(r) for r in await cur.fetchall()]
+        q += " GROUP BY j.id ORDER BY j.created_at DESC"
+        async with db.execute(q) as cur:
+            return [dict(r) for r in await cur.fetchall()]
+
+
 # ── Chat ──────────────────────────────────────────────────────────────────────
 
 async def save_message(role: str, content: str):
