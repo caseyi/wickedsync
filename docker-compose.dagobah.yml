@@ -23,5 +23,5 @@ services:
       - PORT=8088
       - MOVIES_PATH=/mnt/movies
       - VG_PATH=/mnt/vg
-      - MARVEL_PATH=/mnt/movies   # fallback — Marvel items won't route here anyway
+      - MARVEL_PATH=/mnt/marvel   # not mounted on Dagobah — path won't exist, category skipped
       - CLAUDE_MODEL=claude-haiku-4-5-20251001

@@ -395,6 +395,13 @@ async def get_worker_concurrency():
     return {"concurrent_limit": get_concurrency()}
 
 
+@app.get("/api/worker/progress")
+async def get_download_progress():
+    """Return live bytes-downloaded for every active file download."""
+    from app.downloader import get_all_progress
+    return get_all_progress()
+
+
 # ── Library Snapshot (must be before /{category} to avoid route shadowing) ────
 
 @app.get("/api/library/snapshot")
@@ -623,6 +630,130 @@ async def apply_suggestions(body: dict):
             await db.set_franchise_tag(model_name, franchise, source="claude")
             saved += 1
     return {"saved": saved}
+
+
+# ── Franchise folder structure ────────────────────────────────────────────────
+
+@app.post("/api/library/apply-franchise-structure")
+async def apply_franchise_structure(confirmed: bool = False):
+    """
+    Move tagged folders into <category>/<Franchise>/<folder> subdirectories.
+    confirmed=False → dry-run preview only (no files moved).
+    confirmed=True  → actually move folders.
+    """
+    import shutil as _shutil
+
+    tag_rows = await db.list_franchise_tags()
+    franchise_map = {r["model_name"]: r["franchise"] for r in tag_rows}
+
+    planned = []
+    already_done = []
+    errors = []
+
+    for folder_name, franchise in franchise_map.items():
+        for cat, base_path in settings.term_to_path.items():
+            if not os.path.isdir(base_path):
+                continue
+            src = os.path.join(base_path, folder_name)
+            if not os.path.isdir(src):
+                continue
+
+            # Check if already inside the franchise subdir
+            franchise_dir = os.path.join(base_path, franchise)
+            dest = os.path.join(franchise_dir, folder_name)
+
+            if os.path.normpath(os.path.dirname(src)) == os.path.normpath(franchise_dir):
+                already_done.append({"folder": folder_name, "franchise": franchise, "category": cat})
+                break
+
+            if os.path.exists(dest):
+                errors.append({"folder": folder_name, "error": f"Dest already exists: {dest}"})
+                break
+
+            planned.append({
+                "folder": folder_name,
+                "franchise": franchise,
+                "category": cat,
+                "from": src,
+                "to": dest,
+            })
+
+            if confirmed:
+                try:
+                    os.makedirs(franchise_dir, exist_ok=True)
+                    _shutil.move(src, dest)
+                except Exception as e:
+                    errors.append({"folder": folder_name, "error": str(e)})
+                    planned.pop()
+            break  # found in this category — don't check others
+
+    return {
+        "confirmed": confirmed,
+        "planned": planned,
+        "already_done": len(already_done),
+        "errors": errors,
+        "summary": {
+            "to_move": len(planned),
+            "already_organized": len(already_done),
+            "errors": len(errors),
+        },
+    }
+
+
+@app.post("/api/library/quarantine")
+async def quarantine_folder(body: dict):
+    """
+    Move a folder to <category_path>/_review/<folder_name> for manual inspection.
+    Body: {"folder": "WICKED - Foo Bar", "category": "Movies"}
+    """
+    import shutil as _shutil
+
+    folder_name: str = body.get("folder", "").strip()
+    category: str = body.get("category", "").strip()
+
+    if not folder_name:
+        raise HTTPException(status_code=400, detail="folder required")
+
+    # Find the folder — use category hint if provided, else search all
+    search_cats = (
+        {category: settings.term_to_path[category]}
+        if category and category in settings.term_to_path
+        else settings.term_to_path
+    )
+
+    for cat, base_path in search_cats.items():
+        if not os.path.isdir(base_path):
+            continue
+        src = os.path.join(base_path, folder_name)
+        if not os.path.isdir(src):
+            # Also check inside franchise subdirs
+            found = None
+            try:
+                for entry in os.listdir(base_path):
+                    candidate = os.path.join(base_path, entry, folder_name)
+                    if os.path.isdir(candidate):
+                        found = candidate
+                        break
+            except PermissionError:
+                pass
+            if not found:
+                continue
+            src = found
+
+        review_dir = os.path.join(base_path, "_review")
+        dest = os.path.join(review_dir, folder_name)
+
+        if os.path.exists(dest):
+            raise HTTPException(status_code=409, detail=f"Already in _review: {folder_name}")
+
+        try:
+            os.makedirs(review_dir, exist_ok=True)
+            _shutil.move(src, dest)
+            return {"moved": folder_name, "to": dest, "category": cat}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    raise HTTPException(status_code=404, detail=f"Folder not found: {folder_name}")
 
 
 # ── Claude chat ───────────────────────────────────────────────────────────────

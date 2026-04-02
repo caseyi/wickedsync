@@ -55,6 +55,37 @@ _IDLE_MIN = 8
 _IDLE_MAX = 20
 
 
+# ── Live download progress ────────────────────────────────────────────────────
+# file_id → {"filename": str, "downloaded": int, "total": int, "started": float}
+_file_progress: dict[int, dict] = {}
+
+
+def update_progress(file_id: int, downloaded: int, total: int, filename: str = "") -> None:
+    import time
+    entry = _file_progress.get(file_id)
+    if entry is None:
+        _file_progress[file_id] = {
+            "filename": filename,
+            "downloaded": downloaded,
+            "total": total,
+            "started": time.monotonic(),
+            "speed_bps": 0,
+        }
+    else:
+        elapsed = time.monotonic() - entry["started"]
+        entry["downloaded"] = downloaded
+        entry["total"] = total
+        entry["speed_bps"] = int(downloaded / elapsed) if elapsed > 0.1 else 0
+
+
+def clear_progress(file_id: int) -> None:
+    _file_progress.pop(file_id, None)
+
+
+def get_all_progress() -> dict:
+    return {str(fid): dict(p) for fid, p in _file_progress.items()}
+
+
 def _pick_ua() -> str:
     return random.choice(_USER_AGENTS)
 
@@ -267,12 +298,15 @@ class DownloadWorker:
         await asyncio.sleep(jitter)
 
         await db.update_file(file_id, status="downloading")
+        filename = os.path.basename(file_row["dest_path"])
 
         try:
             size = await download_file_with_retry(
                 cdn_url=file_row["cdn_url"],
                 dest_path=file_row["dest_path"],
+                on_progress=lambda d, t: update_progress(file_id, d, t, filename),
             )
+            clear_progress(file_id)
             await db.update_file(file_id, status="done", size_bytes=size)
 
             # Update parent job's done_count
@@ -284,6 +318,7 @@ class DownloadWorker:
                 await db.update_job(job_id, done_count=done, status=new_status)
 
         except Exception as e:
+            clear_progress(file_id)
             await db.update_file(file_id, status="error", error_msg=str(e)[:500])
             logger.error(f"Failed to download file {file_id}: {e}")
 

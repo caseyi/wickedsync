@@ -225,6 +225,12 @@
       <!-- Downloads tab -->
       <div class="tab-panel active" id="tab-jobs">
 
+        <!-- Active downloads progress -->
+        <div id="active-downloads-bar" style="display:none;background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:10px 14px;margin-bottom:12px">
+          <div style="font-size:11px;font-weight:700;color:var(--accent2);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">⬇ Active Downloads</div>
+          <div id="active-downloads-list"></div>
+        </div>
+
         <!-- Stats bar -->
         <div id="jobs-stats-bar" style="display:flex;gap:16px;background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:10px 16px;margin-bottom:12px;font-size:12px;flex-wrap:wrap;align-items:center">
           <span style="color:var(--muted)">Loading stats…</span>
@@ -345,6 +351,7 @@
         <div style="display:flex;gap:10px;align-items:center;margin-bottom:16px;flex-wrap:wrap">
           <button class="btn btn-secondary" onclick="loadTags()">↻ Refresh</button>
           <button class="btn" style="background:#4c1d95;color:#ddd8fe" onclick="suggestTags()">✨ Suggest with Claude</button>
+          <button class="btn btn-secondary" onclick="previewFranchiseStructure()" id="franchise-structure-btn" title="Preview moving tagged folders into franchise sub-directories">📂 Apply Structure</button>
           <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer">
             <input type="checkbox" id="tags-show-untagged" checked onchange="renderTagsTable()">
             Show untagged
@@ -395,6 +402,17 @@
             <option value="Marvel">Marvel</option>
           </select>
           <button class="btn btn-primary btn-sm" onclick="addTag()">+ Add Tag</button>
+        </div>
+
+        <!-- Franchise structure result panel -->
+        <div id="franchise-structure-panel" style="display:none;background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:14px">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+            <b style="font-size:13px">📂 Franchise Structure Preview</b>
+            <span id="franchise-structure-status" style="font-size:12px;color:var(--muted)"></span>
+            <button class="btn btn-primary btn-sm" id="franchise-structure-confirm-btn" onclick="confirmFranchiseStructure()" style="display:none;margin-left:auto">✅ Move Folders</button>
+            <button class="btn btn-secondary btn-sm" onclick="document.getElementById('franchise-structure-panel').style.display='none'" style="margin-left:auto">✕</button>
+          </div>
+          <div id="franchise-structure-list" style="max-height:240px;overflow-y:auto;font-size:12px;font-family:monospace"></div>
         </div>
 
         <!-- Tags table -->
@@ -668,6 +686,11 @@ function showTab(id) {
   if (id === 'jobs') { loadJobs(); loadJobsStats(); }
   if (id === 'library') loadLibrary();
   if (id === 'tags') loadTags();
+  if (id === 'annotate') {
+    // Auto-export a fresh snapshot if the Step 1 area is empty
+    const snapshotEl = document.getElementById('snapshot-output');
+    if (!snapshotEl || !snapshotEl.value.trim()) exportSnapshot();
+  }
 }
 
 function badge(status) {
@@ -1261,6 +1284,86 @@ async function saveSuggestions() {
   await loadTags();
 }
 
+// ── Franchise Structure ───────────────────────────────────────────────────────
+
+async function previewFranchiseStructure() {
+  const btn = document.getElementById('franchise-structure-btn');
+  const panel = document.getElementById('franchise-structure-panel');
+  const status = document.getElementById('franchise-structure-status');
+  const list = document.getElementById('franchise-structure-list');
+  const confirmBtn = document.getElementById('franchise-structure-confirm-btn');
+
+  btn.disabled = true;
+  status.textContent = '⏳ Scanning…';
+  panel.style.display = 'block';
+  list.innerHTML = '';
+  confirmBtn.style.display = 'none';
+
+  try {
+    const res = await api('POST', '/api/library/apply-franchise-structure?confirmed=false');
+    const { planned, already_done, errors, summary } = res;
+
+    if (planned.length === 0 && errors.length === 0) {
+      status.textContent = `✓ All ${already_done} tagged folders already organized`;
+      list.innerHTML = '<span style="color:var(--muted)">Nothing to move.</span>';
+    } else {
+      status.textContent = `${summary.to_move} folders to move · ${summary.already_organized} already done · ${summary.errors} errors`;
+      list.innerHTML = planned.map(m =>
+        `<div style="padding:3px 0;border-bottom:1px solid rgba(255,255,255,0.04)">
+          <span style="color:var(--accent2)">[${m.category}]</span>
+          <span style="color:var(--text)"> ${m.folder}</span>
+          <span style="color:var(--muted)"> → </span>
+          <span style="color:var(--green)">${m.franchise}/</span>
+        </div>`
+      ).join('') + (errors.length ? errors.map(e =>
+        `<div style="padding:3px 0;color:var(--red)">⚠ ${e.folder}: ${e.error}</div>`
+      ).join('') : '');
+
+      if (planned.length > 0) confirmBtn.style.display = 'inline-flex';
+    }
+  } catch (e) {
+    status.textContent = `Error: ${e.message}`;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function confirmFranchiseStructure() {
+  const confirmBtn = document.getElementById('franchise-structure-confirm-btn');
+  const status = document.getElementById('franchise-structure-status');
+  if (!confirm('Move folders into franchise sub-directories on the NAS? This cannot be undone from the app.')) return;
+  confirmBtn.disabled = true;
+  status.textContent = '⏳ Moving…';
+  try {
+    const res = await api('POST', '/api/library/apply-franchise-structure?confirmed=true');
+    status.textContent = `✓ Moved ${res.summary.to_move} folders`;
+    confirmBtn.style.display = 'none';
+    await loadTags();
+  } catch (e) {
+    status.textContent = `Error: ${e.message}`;
+  } finally {
+    confirmBtn.disabled = false;
+  }
+}
+
+// ── Health — Quarantine ───────────────────────────────────────────────────────
+
+async function quarantineFolder(folderName, pairIndex, side) {
+  if (!confirm(`Move "${folderName}" to _review/? You can manually inspect or restore it from there.`)) return;
+  try {
+    await api('POST', '/api/library/quarantine', { folder: folderName });
+    // Dim the pair row to show it was acted on
+    const row = document.getElementById(`dupe-pair-${pairIndex}`);
+    if (row) {
+      row.style.opacity = '0.35';
+      row.style.textDecoration = 'line-through';
+      row.querySelectorAll('button').forEach(b => b.disabled = true);
+    }
+  } catch (e) {
+    alert(`Error: ${e.message}`);
+  }
+}
+
 // ── Library Health ────────────────────────────────────────────────────────────
 let _healthReport = null;
 let _renameBasePath = '';
@@ -1353,12 +1456,18 @@ function renderHealthReport(report) {
   document.getElementById('health-dupes-count').textContent = s.fuzzy_dupes;
   if (report.fuzzy_dupes.length > 0) {
     dupesSection.style.display = 'block';
-    document.getElementById('health-dupes-list').innerHTML = report.fuzzy_dupes.map(d => `
-      <div class="dupe-pair">
-        <span class="dupe-sim">${Math.round(d.similarity * 100)}% match</span>
-        <span style="color:var(--red)">📁 ${d.folder_a}</span>
+    document.getElementById('health-dupes-list').innerHTML = report.fuzzy_dupes.map((d, i) => `
+      <div class="dupe-pair" id="dupe-pair-${i}">
+        <span class="dupe-sim">${Math.round(d.similarity * 100)}%</span>
+        <span style="color:var(--red);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${d.folder_a}">📁 ${d.folder_a}</span>
         <span style="color:var(--muted)">↔</span>
-        <span style="color:var(--yellow)">📁 ${d.folder_b}</span>
+        <span style="color:var(--yellow);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${d.folder_b}">📁 ${d.folder_b}</span>
+        <button class="btn btn-sm" style="font-size:10px;padding:2px 7px;background:#7f1d1d;color:#fca5a5" title="Quarantine ${d.folder_a}"
+          onclick="quarantineFolder('${d.folder_a.replace(/'/g,"\\'")}', ${i}, 'a')">🗑 A</button>
+        <button class="btn btn-sm" style="font-size:10px;padding:2px 7px;background:#7f1d1d;color:#fca5a5" title="Quarantine ${d.folder_b.replace(/'/g,"\\'")}}"
+          onclick="quarantineFolder('${d.folder_b.replace(/'/g,"\\'")}', ${i}, 'b')">🗑 B</button>
+        <button class="btn btn-sm" style="font-size:10px;padding:2px 7px;background:var(--border);color:var(--muted)"
+          onclick="document.getElementById('dupe-pair-${i}').style.display='none'">Skip</button>
       </div>
     `).join('');
   } else {
@@ -1719,6 +1828,44 @@ async function applyAnnotations() {
   }
 }
 
+// ── Live Download Progress ────────────────────────────────────────────────────
+
+function fmtSpeed(bps) {
+  if (!bps) return '';
+  if (bps >= 1e6) return ` · ${(bps/1e6).toFixed(1)} MB/s`;
+  return ` · ${(bps/1e3).toFixed(0)} KB/s`;
+}
+
+async function refreshActiveDownloads() {
+  const bar = document.getElementById('active-downloads-bar');
+  const list = document.getElementById('active-downloads-list');
+  if (!bar || !list) return;
+  try {
+    const progress = await api('GET', '/api/worker/progress');
+    const entries = Object.entries(progress);
+    if (entries.length === 0) {
+      bar.style.display = 'none';
+      return;
+    }
+    bar.style.display = 'block';
+    list.innerHTML = entries.map(([fid, p]) => {
+      const pct = p.total > 0 ? Math.round(p.downloaded / p.total * 100) : 0;
+      const dl = p.total > 0
+        ? `${(p.downloaded/1e6).toFixed(1)} / ${(p.total/1e6).toFixed(1)} MB (${pct}%)`
+        : `${(p.downloaded/1e6).toFixed(1)} MB`;
+      return `<div style="margin-bottom:6px">
+        <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:3px">
+          <span style="font-family:monospace;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:60%">${p.filename}</span>
+          <span style="color:var(--muted);white-space:nowrap">${dl}${fmtSpeed(p.speed_bps)}</span>
+        </div>
+        <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
+      </div>`;
+    }).join('');
+  } catch (_) {
+    bar.style.display = 'none';
+  }
+}
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 loadJobs();
 loadJobsStats();
@@ -1731,6 +1878,7 @@ setInterval(() => {
   const activeTab = document.querySelector('.tab-panel.active');
   if (activeTab?.id === 'tab-jobs') loadJobs();
 }, 15000);
+setInterval(refreshActiveDownloads, 2000);
 </script>
 </body>
 </html>
