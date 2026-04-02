@@ -17,6 +17,7 @@ Usage:
   agent = ClaudeAgent()
   reply = await agent.chat("Download all the October 2025 Marvel items")
 """
+import asyncio
 import csv
 import io
 import json
