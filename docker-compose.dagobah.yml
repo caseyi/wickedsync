@@ -24,4 +24,4 @@ services:
       - MOVIES_PATH=/mnt/movies
       - VG_PATH=/mnt/vg
       - MARVEL_PATH=/mnt/movies   # fallback — Marvel items won't route here anyway
-      - CLAUDE_MODEL=claude-opus-4-6
+      - CLAUDE_MODEL=claude-haiku-4-5-20251001
