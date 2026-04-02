@@ -109,18 +109,20 @@ class Settings(BaseSettings):
         Validate and return a safe absolute path for library operations.
 
         `requested` may be:
-          - None / ""           → returns archive_path (whole archive)
-          - a subdir name       → e.g. "Movies"  (looked up in archive_subdirs)
-          - an absolute path    → must be under archive_path (safety check)
+          - None / ""                     → returns archive_path (whole archive)
+          - a top-level subdir name       → e.g. "Movies" (looked up in archive_subdirs)
+          - a relative path               → e.g. "Wicked Archive/Movies" (joined with archive_path)
+          - an absolute path              → must be under archive_path (safety check)
 
         Returns None if the path is invalid / not accessible.
         """
         archive = self.archive_path
+        real_archive = os.path.realpath(archive)
 
         if not requested:
             return archive if os.path.isdir(archive) else None
 
-        # Subdir shorthand (e.g. "Movies")
+        # Top-level subdir shorthand (e.g. "Movies", "Wicked Archive")
         subdirs = self.archive_subdirs
         if requested in subdirs:
             return subdirs[requested]
@@ -128,9 +130,15 @@ class Settings(BaseSettings):
         # Absolute path — must be under archive_path
         if os.path.isabs(requested):
             real = os.path.realpath(requested)
-            real_archive = os.path.realpath(archive)
             if real.startswith(real_archive + os.sep) or real == real_archive:
                 return real if os.path.isdir(real) else None
+            return None
+
+        # Relative path — join with archive root and safety-check
+        candidate = os.path.normpath(os.path.join(archive, requested))
+        real_candidate = os.path.realpath(candidate)
+        if real_candidate.startswith(real_archive + os.sep) or real_candidate == real_archive:
+            return real_candidate if os.path.isdir(real_candidate) else None
 
         return None
 

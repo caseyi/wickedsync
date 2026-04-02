@@ -402,26 +402,106 @@ async def get_download_progress():
 # ── Library Folders (must be before /{category} to avoid route shadowing) ────
 
 @app.get("/api/library/folders")
-async def list_archive_folders():
+async def list_archive_folders(path: str = ""):
     """
-    List all immediate subdirectories of the archive root.
-    Returns a list of {name, path} objects for the UI folder selector.
-    Also includes a synthetic "(All)" entry for the root itself.
+    List immediate subdirectories of a folder inside the archive.
+
+    path="" → list archive root's immediate subdirs (default)
+    path="Wicked Archive"  → list subdirs of archive_root/Wicked Archive
+    path="/mnt/archive/Wicked Archive/Movies" → absolute path (must be under archive_root)
+
+    Returns:
+      archive_path: the archive root
+      current_path: the directory being listed
+      parent_path:  parent directory (empty string if at archive root)
+      breadcrumbs:  [{name, path}] trail from root → current
+      folders:      [{name, path, folder_count, has_children}]
     """
     archive = settings.archive_path
-    subdirs = settings.archive_subdirs  # {name: path}
 
+    # Resolve the requested path
+    if not path:
+        current = archive
+    else:
+        current = settings.resolve_working_path(path)
+        if not current:
+            # Try treating path as relative to archive root
+            candidate = os.path.join(archive, path)
+            real_candidate = os.path.realpath(candidate)
+            real_archive = os.path.realpath(archive)
+            if real_candidate.startswith(real_archive) and os.path.isdir(real_candidate):
+                current = real_candidate
+            else:
+                raise HTTPException(status_code=400, detail=f"Invalid path: {path}")
+
+    if not os.path.isdir(current):
+        raise HTTPException(status_code=404, detail=f"Directory not found: {current}")
+
+    # Build breadcrumbs (relative to archive root)
+    real_current = os.path.realpath(current)
+    real_archive = os.path.realpath(archive)
+    breadcrumbs = [{"name": "Archive Root", "path": ""}]
+    if real_current != real_archive:
+        rel = os.path.relpath(real_current, real_archive)
+        parts = rel.split(os.sep)
+        accumulated = ""
+        for part in parts:
+            accumulated = os.path.join(accumulated, part) if accumulated else part
+            breadcrumbs.append({"name": part, "path": accumulated})
+
+    # Parent path (empty string = at archive root)
+    if real_current == real_archive:
+        parent_path = ""
+    else:
+        parent_real = os.path.dirname(real_current)
+        if parent_real == real_archive or parent_real.startswith(real_archive + os.sep):
+            parent_path = os.path.relpath(parent_real, real_archive)
+            if parent_path == ".":
+                parent_path = ""
+        else:
+            parent_path = ""
+
+    # List immediate subdirectories
     entries = []
-    if os.path.isdir(archive):
-        entries.append({"name": "(All)", "path": archive, "folder_count": len(subdirs)})
-    for name, path in subdirs.items():
-        try:
-            count = sum(1 for e in os.listdir(path) if os.path.isdir(os.path.join(path, e)))
-        except PermissionError:
-            count = -1
-        entries.append({"name": name, "path": path, "folder_count": count})
+    try:
+        names = sorted(os.listdir(current))
+    except PermissionError:
+        names = []
 
-    return {"archive_path": archive, "folders": entries}
+    for name in names:
+        if name.startswith(".") or name.startswith("@"):
+            continue
+        full = os.path.join(current, name)
+        if not os.path.isdir(full):
+            continue
+        try:
+            children = [e for e in os.listdir(full) if os.path.isdir(os.path.join(full, e)) and not e.startswith("@")]
+            folder_count = len(children)
+            has_children = folder_count > 0
+        except PermissionError:
+            folder_count = -1
+            has_children = False
+
+        rel = os.path.relpath(full, real_archive)
+        entries.append({
+            "name": name,
+            "path": rel,           # relative path from archive root (use as `path=` param)
+            "abs_path": full,      # absolute container path (use as `root=` param)
+            "folder_count": folder_count,
+            "has_children": has_children,
+        })
+
+    # Synthetic "(Use this folder)" entry — the current dir itself
+    current_rel = "" if real_current == real_archive else os.path.relpath(real_current, real_archive)
+
+    return {
+        "archive_path": archive,
+        "current_path": current_rel,
+        "current_abs": current,
+        "parent_path": parent_path,
+        "breadcrumbs": breadcrumbs,
+        "folders": entries,
+    }
 
 
 # ── Library Snapshot (must be before /{category} to avoid route shadowing) ────

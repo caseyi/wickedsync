@@ -30,9 +30,28 @@
   .status-pill.running { color: var(--green); border-color: var(--green); }
   .status-pill.stopped { color: var(--muted); border-color: var(--muted); }
   .stat { font-size: 12px; color: var(--muted); margin-left: auto; }
-  .folder-selector-wrap { display:inline-flex; align-items:center; gap:5px; font-size:12px; color:var(--muted); }
-  .folder-selector-wrap select { width:auto; max-width:200px; padding:3px 6px; font-size:12px; color:var(--text); background:var(--bg); border:1px solid var(--border); border-radius:5px; }
-  .folder-selector-wrap .folder-icon { font-size:14px; }
+  /* ── Folder browser ─────────────────────────────────────────────────────── */
+  .folder-btn { display:inline-flex; align-items:center; gap:5px; background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:4px 10px; font-size:12px; color:var(--text); cursor:pointer; max-width:260px; overflow:hidden; }
+  .folder-btn:hover { border-color: var(--accent); }
+  .folder-btn .fb-path { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:200px; }
+  .folder-panel-wrap { position:relative; display:inline-block; }
+  .folder-panel { position:absolute; top:calc(100% + 4px); left:0; width:340px; background:var(--panel); border:1px solid var(--border); border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,0.5); z-index:999; overflow:hidden; }
+  .folder-panel .fb-crumbs { display:flex; align-items:center; flex-wrap:wrap; gap:2px; padding:8px 12px; border-bottom:1px solid var(--border); font-size:11px; color:var(--muted); }
+  .folder-panel .fb-crumb { cursor:pointer; color:var(--accent2); }
+  .folder-panel .fb-crumb:hover { text-decoration:underline; }
+  .folder-panel .fb-crumb-sep { color:var(--border); }
+  .folder-panel .fb-list { max-height:260px; overflow-y:auto; }
+  .folder-panel .fb-item { display:flex; align-items:center; gap:8px; padding:8px 12px; cursor:pointer; font-size:13px; border-bottom:1px solid rgba(255,255,255,0.03); }
+  .folder-panel .fb-item:hover { background:rgba(124,58,237,0.12); }
+  .folder-panel .fb-item.fb-back { color:var(--muted); font-size:12px; }
+  .folder-panel .fb-item .fb-count { margin-left:auto; font-size:11px; color:var(--muted); white-space:nowrap; }
+  .folder-panel .fb-item .fb-arrow { color:var(--muted); font-size:10px; }
+  .folder-panel .fb-footer { padding:8px 12px; border-top:1px solid var(--border); display:flex; gap:8px; align-items:center; }
+  .folder-panel .fb-use-btn { flex:1; padding:6px 10px; background:var(--accent); color:#fff; border:none; border-radius:5px; font-size:12px; font-weight:600; cursor:pointer; }
+  .folder-panel .fb-use-btn:hover { opacity:0.85; }
+  .folder-panel .fb-current-label { font-size:11px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:180px; }
+  .folder-scope-label { font-size:11px; color:var(--muted); padding:4px 0; margin-bottom:8px; }
+  .folder-scope-label b { color:var(--accent2); }
   .stat b { color: var(--text); }
 
   main { display: grid; grid-template-columns: 320px 1fr; overflow: hidden; }
@@ -160,11 +179,20 @@
       <input id="concurrency-input" type="number" min="1" max="20" value="1"
         style="width:42px;padding:2px 4px;font-size:12px;background:var(--bg2);border:1px solid var(--border);border-radius:4px;color:var(--text);text-align:center">
     </label>
-    <div class="folder-selector-wrap" title="Working folder — all operations are scoped to this folder">
-      <span class="folder-icon">📁</span>
-      <select id="folder-selector">
-        <option value="_all">(All)</option>
-      </select>
+    <div class="folder-panel-wrap" id="folder-panel-wrap">
+      <button class="folder-btn" id="folder-btn" onclick="toggleFolderPanel()" title="Working folder — click to change">
+        📁 <span class="fb-path" id="folder-btn-label">(All)</span> ▾
+      </button>
+      <div class="folder-panel" id="folder-panel" style="display:none">
+        <div class="fb-crumbs" id="fb-crumbs"></div>
+        <div class="fb-list" id="fb-list">
+          <div style="padding:12px;color:var(--muted);font-size:12px">Loading…</div>
+        </div>
+        <div class="fb-footer">
+          <span class="fb-current-label" id="fb-current-label">Archive root</span>
+          <button class="fb-use-btn" onclick="useCurrentFolderBrowserPath()">✓ Use this folder</button>
+        </div>
+      </div>
     </div>
     <span id="codename-badge" style="font-size:11px;font-weight:700;color:var(--accent2);background:rgba(6,182,212,0.12);border:1px solid var(--accent2);border-radius:99px;padding:2px 10px;letter-spacing:0.5px;opacity:0" title="Build version">–</span>
     <div class="stat">
@@ -455,9 +483,7 @@
 
         <!-- Toolbar -->
         <div style="display:flex;gap:10px;align-items:center;margin-bottom:16px;flex-wrap:wrap">
-          <select id="health-category" style="width:180px">
-            <option value="_all">(All)</option>
-          </select>
+          <div class="folder-scope-label">📁 Scope: <b id="health-scope-label">(All)</b></div>
           <button class="btn btn-primary" onclick="runHealthScan()" id="health-scan-btn" style="width:auto">🔬 Scan Library</button>
           <span id="health-scan-status" style="color:var(--muted);font-size:12px"></span>
         </div>
@@ -587,9 +613,7 @@
               <span>📤 Step 1 — Export Library Snapshot</span>
             </div>
             <div style="padding:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-              <select id="annotate-category" style="width:180px">
-                <option value="_all">(All)</option>
-              </select>
+              <div class="folder-scope-label" style="display:inline-block;margin-right:8px">📁 Scope: <b id="annotate-scope-label">(All)</b></div>
               <button class="btn btn-primary" onclick="exportSnapshot()" id="export-snapshot-btn" style="width:auto">
                 📥 Export Snapshot
               </button>
@@ -1379,7 +1403,8 @@ function toggleSection(bodyId) {
 }
 
 async function runHealthScan() {
-  const cat = document.getElementById('health-category').value;
+  const cat = _workingFolder.rel || '_all';
+  const absPath = _workingFolder.abs || '';
   const btn = document.getElementById('health-scan-btn');
   const status = document.getElementById('health-scan-status');
   btn.disabled = true;
@@ -1394,8 +1419,10 @@ async function runHealthScan() {
   document.getElementById('health-summary').style.display = 'none';
 
   try {
-    // cat may be "_all" (whole archive), a subdir name, or a legacy term
-    const healthUrl = `/api/organize/health/${encodeURIComponent(cat)}`;
+    // Pass custom_path when we have a deep absolute path; category is a display hint
+    const catSlug = cat === '_all' ? '_all' : encodeURIComponent(_workingFolder.label || cat);
+    const customPathParam = absPath ? `&custom_path=${encodeURIComponent(absPath)}` : '';
+    const healthUrl = `/api/organize/health/${catSlug}?_t=${Date.now()}${customPathParam}`;
     const report = await api('GET', healthUrl);
     _healthReport = report;
     _renameBasePath = report.base_dir;
@@ -1664,8 +1691,9 @@ async function exportSnapshot() {
   statusEl.textContent = '⏳ Exporting…';
 
   try {
-    const cat = document.getElementById('annotate-category').value;
-    const url = `/api/library/snapshot?format=txt${cat !== '_all' ? '&root=' + encodeURIComponent(cat) : ''}`;
+    // Use absolute path for snapshot so backend can resolve deep paths
+    const absPath = _workingFolder.abs || '';
+    const url = `/api/library/snapshot?format=txt${absPath ? '&root=' + encodeURIComponent(absPath) : ''}`;
     const res = await fetch(url);
     if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
     _snapshotText = await res.text();
@@ -1872,52 +1900,137 @@ async function refreshActiveDownloads() {
   }
 }
 
-// ── Folder selector ───────────────────────────────────────────────────────────
-// IDs of all selects that should mirror the global folder selector
-const FOLDER_SELECT_IDS = ['folder-selector', 'health-category', 'annotate-category'];
-const LS_FOLDER_KEY = 'wickedsync_working_folder';
+// ── Folder browser ────────────────────────────────────────────────────────────
+const LS_FOLDER_KEY = 'wickedsync_working_folder';   // stores JSON: {rel, abs, label}
+
+// Global working folder state
+let _workingFolder = { rel: '', abs: '', label: '(All)' };
+
+// Path currently shown inside the browser panel (may differ from _workingFolder)
+let _browserPath = '';   // relative path being browsed
+
+function getWorkingAbsPath() {
+  return _workingFolder.abs || '';   // '' = archive root / all
+}
+
+// Apply a new working folder choice and update all UI labels
+function applyWorkingFolder(rel, abs, label) {
+  _workingFolder = { rel, abs, label };
+  try { localStorage.setItem(LS_FOLDER_KEY, JSON.stringify(_workingFolder)); } catch(_) {}
+
+  // Header button label
+  document.getElementById('folder-btn-label').textContent = label || '(All)';
+
+  // Per-tab scope labels
+  const scopeText = label || '(All)';
+  ['health-scope-label', 'annotate-scope-label'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = scopeText;
+  });
+}
+
+// Toggle the folder picker panel open/closed
+function toggleFolderPanel() {
+  const panel = document.getElementById('folder-panel');
+  if (panel.style.display === 'none') {
+    panel.style.display = 'block';
+    navigateFolderBrowser(_browserPath || '');
+  } else {
+    panel.style.display = 'none';
+  }
+}
+
+// Close panel on outside click
+document.addEventListener('click', e => {
+  const wrap = document.getElementById('folder-panel-wrap');
+  if (wrap && !wrap.contains(e.target)) {
+    const panel = document.getElementById('folder-panel');
+    if (panel) panel.style.display = 'none';
+  }
+});
+
+// Navigate the browser to a given relative path
+async function navigateFolderBrowser(relPath) {
+  _browserPath = relPath || '';
+  const list = document.getElementById('fb-list');
+  const crumbs = document.getElementById('fb-crumbs');
+  const currentLabel = document.getElementById('fb-current-label');
+  list.innerHTML = '<div style="padding:12px;color:var(--muted);font-size:12px">Loading…</div>';
+
+  try {
+    const data = await api('GET', `/api/library/folders${relPath ? '?path=' + encodeURIComponent(relPath) : ''}`);
+
+    // Breadcrumbs
+    crumbs.innerHTML = (data.breadcrumbs || []).map((b, i, arr) => {
+      const isLast = i === arr.length - 1;
+      return (i > 0 ? '<span class="fb-crumb-sep"> / </span>' : '') +
+        `<span class="fb-crumb${isLast ? '" style="color:var(--text)' : ''}" onclick="navigateFolderBrowser('${b.path}')">${b.name}</span>`;
+    }).join('');
+
+    // Current dir label for "Use this folder" footer
+    const displayPath = data.current_path || 'Archive root';
+    currentLabel.textContent = displayPath;
+
+    // Folder list
+    const folders = data.folders || [];
+    let html = '';
+
+    // Back button (if not at root)
+    if (data.parent_path !== undefined && data.current_path !== '') {
+      html += `<div class="fb-item fb-back" onclick="navigateFolderBrowser('${data.parent_path}')">
+        ↑ Back
+      </div>`;
+    }
+
+    if (folders.length === 0) {
+      html += '<div style="padding:12px;color:var(--muted);font-size:12px">No subfolders here</div>';
+    } else {
+      folders.forEach(f => {
+        const count = f.folder_count >= 0 ? `${f.folder_count} subfolder${f.folder_count !== 1 ? 's' : ''}` : '?';
+        const arrow = f.has_children ? '<span class="fb-arrow">›</span>' : '';
+        const clickNav = f.has_children ? `onclick="navigateFolderBrowser('${f.path}')"` : `onclick="useFolder('${f.path}','${f.abs_path}','${f.name}')"`;
+        html += `<div class="fb-item" ${clickNav}>
+          <span>📂</span>
+          <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${f.name}</span>
+          <span class="fb-count">${count}</span>
+          ${arrow}
+          ${f.has_children ? `<button class="btn btn-sm btn-secondary" style="padding:2px 6px;font-size:11px;margin-left:4px" onclick="event.stopPropagation();useFolder('${f.path}','${f.abs_path}','${f.name}')">Select</button>` : ''}
+        </div>`;
+      });
+    }
+    list.innerHTML = html;
+  } catch(e) {
+    list.innerHTML = `<div style="padding:12px;color:var(--red);font-size:12px">Error: ${e.message}</div>`;
+  }
+}
+
+// Select a specific folder (called from list items or Select button)
+function useFolder(relPath, absPath, name) {
+  applyWorkingFolder(relPath, absPath, name);
+  document.getElementById('folder-panel').style.display = 'none';
+}
+
+// Select the folder currently being browsed in the panel
+function useCurrentFolderBrowserPath() {
+  const currentLabel = document.getElementById('fb-current-label').textContent;
+  const relPath = _browserPath || '';
+  // We need the abs path — fetch it from the last known browser state
+  // Quick approach: reconstruct from archive_path + relative path
+  // We'll just use relPath as the `root` param (backend resolves it)
+  const label = relPath === '' ? '(All)' : currentLabel.split('/').pop() || currentLabel;
+  applyWorkingFolder(relPath, relPath, label === 'Archive root' ? '(All)' : label);
+  document.getElementById('folder-panel').style.display = 'none';
+}
 
 async function loadFolderSelector() {
+  // Restore saved selection from localStorage
   try {
-    const data = await api('GET', '/api/library/folders');
-    const folders = data.folders || [];
-
-    // Build option HTML: (All) + each subdir
-    const opts = folders.map(f => {
-      const label = f.name === '(All)'
-        ? `(All) — ${data.archive_path}`
-        : `${f.name} (${f.folder_count >= 0 ? f.folder_count : '?'} folders)`;
-      return `<option value="${f.name === '(All)' ? '_all' : f.name}">${label}</option>`;
-    });
-
-    // Restore saved selection
-    const saved = localStorage.getItem(LS_FOLDER_KEY) || '_all';
-
-    FOLDER_SELECT_IDS.forEach(id => {
-      const el = document.getElementById(id);
-      if (!el) return;
-      el.innerHTML = opts.join('');
-      // Try to restore saved value; fall back to first option
-      el.value = saved;
-      if (!el.value) el.selectedIndex = 0;
-    });
-
-    // Keep all selects in sync with each other
-    FOLDER_SELECT_IDS.forEach(id => {
-      const el = document.getElementById(id);
-      if (!el) return;
-      el.addEventListener('change', () => {
-        const val = el.value;
-        localStorage.setItem(LS_FOLDER_KEY, val);
-        FOLDER_SELECT_IDS.forEach(other => {
-          const o = document.getElementById(other);
-          if (o && o !== el) o.value = val;
-        });
-      });
-    });
-  } catch (e) {
-    console.warn('Could not load folder list:', e);
-  }
+    const saved = localStorage.getItem(LS_FOLDER_KEY);
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      applyWorkingFolder(parsed.rel || '', parsed.abs || '', parsed.label || '(All)');
+    }
+  } catch(_) {}
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────
