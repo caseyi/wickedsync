@@ -375,6 +375,74 @@ async def stop_worker():
     return {"result": "stopped"}
 
 
+# ── Library Snapshot (must be before /{category} to avoid route shadowing) ────
+
+@app.get("/api/library/snapshot")
+async def library_snapshot(format: str = "txt"):
+    """
+    Export a full snapshot of all mounted library folders.
+    format=txt  → plain text optimised for pasting into Claude
+    format=json → machine-readable dict
+    """
+    from datetime import datetime as _dt
+
+    categories = {}
+    for cat, path in settings.term_to_path.items():
+        if not os.path.isdir(path) or cat == "Wildcard":
+            continue
+        folders = []
+        for name in sorted(os.listdir(path)):
+            full = os.path.join(path, name)
+            if not os.path.isdir(full):
+                continue
+            try:
+                zips = sum(1 for f in os.listdir(full) if f.lower().endswith(".zip"))
+            except PermissionError:
+                zips = -1
+            folders.append({"name": name, "zips": zips})
+        categories[cat] = folders
+
+    if format == "json":
+        return {"generated": _dt.utcnow().isoformat(), "categories": categories}
+
+    lines = [
+        f"# WickedSync Library Snapshot — {_dt.utcnow().strftime('%Y-%m-%d')}",
+        "#",
+        "# Categories: " + ", ".join(
+            f"{cat} ({len(fols)} folders)" for cat, fols in categories.items()
+        ),
+        "#",
+        "# ── INSTRUCTIONS FOR CLAUDE ────────────────────────────────────────────",
+        "# Review the folder list below and respond ONLY with annotation lines.",
+        "# Use these exact formats (one per line, no extra text):",
+        "#",
+        "#   FRANCHISE: <folder_name> → <Franchise Name>",
+        "#     (group this folder under a franchise sub-directory)",
+        "#",
+        "#   RENAME: <old_name> → <new_name>",
+        "#     (fix typo / normalise capitalisation)",
+        "#",
+        "#   MERGE: <folder_a> + <folder_b>",
+        "#     (these look like duplicates — flag for review)",
+        "#",
+        "#   TAG: <folder_name> | term=<Movies|VG|Marvel>",
+        "#     (re-categorise to a different term)",
+        "#",
+        "# Omit folders that need no changes.  Do not explain your reasoning.",
+        "# ────────────────────────────────────────────────────────────────────────",
+        "",
+    ]
+
+    for cat, folders in categories.items():
+        lines.append(f"[{cat}]  ({len(folders)} folders)")
+        for f in folders:
+            zip_label = f"  ({f['zips']} zips)" if f["zips"] >= 0 else ""
+            lines.append(f"  {f['name']}{zip_label}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 # ── Library browser ───────────────────────────────────────────────────────────
 
 @app.get("/api/library/{category}")
@@ -411,6 +479,37 @@ class FranchiseTagRequest(BaseModel):
 class FranchiseSuggestRequest(BaseModel):
     model_names: list[str] | None = None   # if None, use all known job model_names
     term: str | None = None                # filter by term
+
+
+@app.get("/api/tags/library-overview")
+async def tags_library_overview():
+    """
+    Return every folder from every mounted category, merged with franchise tag status.
+    Used by the Tags tab to show all folders (tagged + untagged).
+    """
+    tag_rows = await db.list_franchise_tags()
+    franchise_map = {r["model_name"]: r for r in tag_rows}
+    result = []
+    for cat, path in settings.term_to_path.items():
+        if not os.path.isdir(path):
+            continue
+        try:
+            entries = sorted(os.listdir(path))
+        except PermissionError:
+            continue
+        for name in entries:
+            if not os.path.isdir(os.path.join(path, name)):
+                continue
+            tag = franchise_map.get(name)
+            result.append({
+                "model_name": name,
+                "category": cat,
+                "franchise": tag["franchise"] if tag else None,
+                "term": tag["term"] if tag else cat,
+                "source": tag["source"] if tag else None,
+            })
+    result.sort(key=lambda x: (x["franchise"] is None, x["model_name"].lower()))
+    return {"count": len(result), "folders": result}
 
 
 @app.get("/api/tags")
@@ -728,8 +827,9 @@ async def library_health(category: str, custom_path: str | None = None):
 
     import asyncio as _asyncio
     loop = _asyncio.get_event_loop()
+    franchise_map = await db.get_franchise_tags()
     report = await loop.run_in_executor(
-        None, lambda: scan_library_health(base_path, cross_category_dirs=cross_dirs)
+        None, lambda: scan_library_health(base_path, cross_category_dirs=cross_dirs, franchise_map=franchise_map)
     )
     report["category"] = category
     return report
@@ -867,79 +967,6 @@ async def health_apply_renames(req: HealthRenameApplyRequest):
         "errors": errors,
         "summary": {"renamed": len(results), "errors": len(errors)},
     }
-
-
-# ── Library Snapshot Export + Annotated Re-import ────────────────────────────
-
-@app.get("/api/library/snapshot")
-async def library_snapshot(format: str = "txt"):
-    """
-    Export a full snapshot of all mounted library folders.
-    format=txt  → plain text optimised for pasting into Claude
-    format=json → machine-readable dict
-
-    The text format includes instructions so Claude knows exactly what
-    annotations to write back.  Paste Claude's response into
-    POST /api/library/import-annotations to apply tags, renames, etc.
-    """
-    from datetime import datetime as _dt
-
-    categories = {}
-    for cat, path in settings.term_to_path.items():
-        if not os.path.isdir(path) or cat == "Wildcard":
-            continue
-        folders = []
-        for name in sorted(os.listdir(path)):
-            full = os.path.join(path, name)
-            if not os.path.isdir(full):
-                continue
-            try:
-                zips = sum(1 for f in os.listdir(full) if f.lower().endswith(".zip"))
-            except PermissionError:
-                zips = -1
-            folders.append({"name": name, "zips": zips})
-        categories[cat] = folders
-
-    if format == "json":
-        return {"generated": _dt.utcnow().isoformat(), "categories": categories}
-
-    # Build plain-text snapshot
-    lines = [
-        f"# WickedSync Library Snapshot — {_dt.utcnow().strftime('%Y-%m-%d')}",
-        "#",
-        "# Categories: " + ", ".join(
-            f"{cat} ({len(fols)} folders)" for cat, fols in categories.items()
-        ),
-        "#",
-        "# ── INSTRUCTIONS FOR CLAUDE ────────────────────────────────────────────",
-        "# Review the folder list below and respond ONLY with annotation lines.",
-        "# Use these exact formats (one per line, no extra text):",
-        "#",
-        "#   FRANCHISE: <folder_name> → <Franchise Name>",
-        "#     (group this folder under a franchise sub-directory)",
-        "#",
-        "#   RENAME: <old_name> → <new_name>",
-        "#     (fix typo / normalise capitalisation)",
-        "#",
-        "#   MERGE: <folder_a> + <folder_b>",
-        "#     (these look like duplicates — flag for review)",
-        "#",
-        "#   TAG: <folder_name> | term=<Movies|VG|Marvel>",
-        "#     (re-categorise to a different term)",
-        "#",
-        "# Omit folders that need no changes.  Do not explain your reasoning.",
-        "# ────────────────────────────────────────────────────────────────────────",
-        "",
-    ]
-
-    for cat, folders in categories.items():
-        lines.append(f"[{cat}]  ({len(folders)} folders)")
-        for f in folders:
-            zip_label = f"  ({f['zips']} zips)" if f["zips"] >= 0 else ""
-            lines.append(f"  {f['name']}{zip_label}")
-        lines.append("")
-
-    return "\n".join(lines)
 
 
 class ImportAnnotationsRequest(BaseModel):

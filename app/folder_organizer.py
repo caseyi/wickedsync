@@ -285,9 +285,21 @@ def build_organization_plan(
     }
 
 
+_NOISE_WORDS = re.compile(
+    r'\b(portrait bust|portrait|sculpture|bust|diorama|supported|presupported|stl|pack|bundle)\b',
+    re.IGNORECASE,
+)
+
+def _strip_noise(name: str) -> str:
+    """Remove common type-suffix noise words before fuzzy comparison."""
+    cleaned = _NOISE_WORDS.sub('', name)
+    return re.sub(r'\s{2,}', ' ', cleaned).strip().strip('-').strip()
+
+
 def scan_library_health(
     base_dir: str,
     cross_category_dirs: dict[str, str] | None = None,
+    franchise_map: dict[str, str] | None = None,
 ) -> dict:
     """
     Deep health scan of a library directory.
@@ -377,6 +389,7 @@ def scan_library_health(
             })
 
     # ── 2. Fuzzy duplicate detection ─────────────────────────────────────────
+    fm = franchise_map or {}
     folder_names = [s["name"] for s in folder_stats]
     fuzzy_dupes = []
     seen_pairs: set[frozenset] = set()
@@ -387,11 +400,25 @@ def scan_library_health(
             if key in seen_pairs:
                 continue
             seen_pairs.add(key)
-            # Quick length filter: skip if lengths differ by more than 30%
-            la, lb = len(name_a), len(name_b)
+
+            # Both have franchise tags → intentionally different, skip
+            if name_a in fm and name_b in fm:
+                continue
+
+            # Strip noise words before comparing
+            stripped_a = _strip_noise(name_a)
+            stripped_b = _strip_noise(name_b)
+
+            # If stripped names are identical they're product variants, not dupes
+            if stripped_a.lower() == stripped_b.lower():
+                continue
+
+            # Quick length filter on stripped names
+            la, lb = len(stripped_a), len(stripped_b)
             if la and lb and (min(la, lb) / max(la, lb)) < 0.70:
                 continue
-            ratio = difflib.SequenceMatcher(None, name_a.lower(), name_b.lower()).ratio()
+
+            ratio = difflib.SequenceMatcher(None, stripped_a.lower(), stripped_b.lower()).ratio()
             if 0.80 <= ratio < 1.0:
                 fuzzy_dupes.append({
                     "folder_a": name_a,
@@ -399,9 +426,12 @@ def scan_library_health(
                     "similarity": round(ratio, 3),
                     "path_a": os.path.join(base_dir, name_a),
                     "path_b": os.path.join(base_dir, name_b),
+                    "tagged_a": name_a in fm,
+                    "tagged_b": name_b in fm,
                 })
 
-    fuzzy_dupes.sort(key=lambda x: x["similarity"], reverse=True)
+    # Franchise-tagged pairs sort to bottom; highest similarity first within each group
+    fuzzy_dupes.sort(key=lambda x: (x["tagged_a"] or x["tagged_b"], -x["similarity"]))
 
     # ── 3. Cross-category duplicate detection ─────────────────────────────────
     cross_category = []
